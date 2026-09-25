@@ -1,0 +1,46 @@
+[project]
+name = "aaltoview"
+version = "0.1.0"
+description = "Data viewer for AaltoFlow measurements (.nc): N-D maps and 1-D overlays, export to files, Origin and Jupyter"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.11"
+dependencies = [
+    "numpy>=1.24",
+    "xarray>=2023.1",
+    "h5netcdf>=1.1",     # reads the .nc files without a system netCDF library
+    "h5py>=3.9",         # h5netcdf's HDF5 backend -- NOT pulled in by h5netcdf itself
+    "matplotlib>=3.7",   # exported figures; also works without the GUI
+]
+
+[project.optional-dependencies]
+gui = [
+    "PySide6>=6.7",
+    "pyqtgraph>=0.13",
+]
+# Push curves and maps straight into a running Origin (Windows, Origin 2021+
+# installed). originpro drives Origin over COM from OUTSIDE it; without this
+# extra the viewer still exports .dat/.csv files that Origin imports.
+origin = [
+    "originpro>=1.1; sys_platform == 'win32'",
+]
+
+[project.scripts]
+aaltoview = "aaltoview.apps.viewer:main"
+
+[dependency-groups]
+dev = ["pytest>=8"]
+
+[build-system]
+requires = ["setuptools>=77"]  # 77+: `license = "MIT"` (PEP 639)
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+# the window icon travels with the package (setuptools ships only .py unless told)
+[tool.setuptools.package-data]
+aaltoview = ["apps/icon.svg"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
