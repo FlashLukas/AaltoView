@@ -1,5 +1,7 @@
 # AaltoView
 
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.22959226.svg)](https://doi.org/10.5281/zenodo.22959226)
+
 A data viewer for **time-resolved MOKE and FMR measurements** (Aalto University,
 NanoSpin group), the Python successor of the LabVIEW **AaltoView**, whose name it carries again
 (it was `trmoke-dataviewer` until 2026-09-24). Open a scan of
@@ -144,9 +146,11 @@ would be grateful for a citation. [`CITATION.cff`](CITATION.cff) has the details
 (GitHub's "Cite this repository" button gives it as BibTeX or APA); in short:
 
 > L. Flajšman, *AaltoView: a viewer for N-dimensional measurement data*,
-> NanoSpin group, Aalto University, https://github.com/FlashLukas/AaltoView
+> NanoSpin group, Aalto University, https://github.com/FlashLukas/AaltoView,
+> doi:10.5281/zenodo.22959226
 
-A citable DOI will be added with the first archived release.
+DOI: [10.5281/zenodo.22959226](https://doi.org/10.5281/zenodo.22959226) (always the latest version; Zenodo lists the DOI of each
+release too).
 
 ## Credits and licence
 
