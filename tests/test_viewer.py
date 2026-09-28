@@ -187,3 +187,39 @@ def test_the_viewer_has_its_own_window_icon():
     theme.apply_window_icon(app)
     assert not app.windowIcon().isNull()
     assert not app.windowIcon().pixmap(32, 32).isNull()   # the SVG actually renders
+
+
+# ───────────────────── deep clean 2026-09-28: proven bugs ─────────────────────
+
+def test_a_new_file_of_the_same_shape_shows_its_own_coordinates(viewer, tmp_path):
+    """Opening a second scan with the same dims and sizes kept the rows of the
+    first one -- INCLUDING their coordinate values. The map showed the new
+    file's 6 GHz slice while its row still said "1 GHz", and the 1D value list
+    offered the old frequencies."""
+    _open_first(viewer)
+    ds2 = _cube().assign_coords(freq=("freq", [6.0, 7.0, 8.0, 9.0], {"units": "GHz"}))
+    viewer.set_dataset(ds2, tmp_path / "second.nc")
+    row = viewer.map.controls.rows[0]
+    assert row.value.text() == "6 GHz"
+    lines = viewer.lines
+    lines.controls.x_combo.setCurrentText("y")
+    lines.along_combo.setCurrentText("freq")
+    assert lines.values.item(0).text() == "freq = 6 GHz"
+
+
+def test_the_complex_part_choice_follows_the_detector(viewer, tmp_path):
+    """The |z| / arg / Re / Im chooser was shown or hidden only when the dims
+    changed. A real detector followed by a complex one with the same dims left
+    it hidden, so the phase of that detector could not be chosen."""
+    _open_first(viewer)                                   # real detectors only
+    c = viewer.map.controls
+    assert c.part_combo.isHidden()
+    z = _cube()["kerr"].values * (1 + 1j)
+    ds2 = xr.Dataset({"s_real": (("freq", "y", "x"), z.real,
+                                 {"complex_pair": "s", "complex_part": "real"}),
+                      "s_imag": (("freq", "y", "x"), z.imag,
+                                 {"complex_pair": "s", "complex_part": "imag"})},
+                     coords=_cube().coords)
+    viewer.set_dataset(ds2, tmp_path / "complex.nc")
+    assert c.det_combo.currentText() == "s"
+    assert not c.part_combo.isHidden()

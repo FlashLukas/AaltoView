@@ -321,9 +321,12 @@ class CubeControls(QtWidgets.QWidget):
             return
         dims = list(da.dims)
         sig = tuple((d, int(da.sizes[d])) for d in dims)
+        # the |z| / arg / Re / Im chooser belongs to the DETECTOR, so it is
+        # decided every time -- not only when the dims change (a real and a
+        # complex detector often share their dims)
+        self.part_combo.setVisible(bool(np.iscomplexobj(da.values)))
         if sig != self._signature:
             self._signature = sig
-            self.part_combo.setVisible(bool(np.iscomplexobj(da.values)))
             # keep the operator's axes when the new detector has them (switching
             # R to Phi should not throw the view away); otherwise innermost two
             dx, dy = V.default_axes(da)
@@ -338,6 +341,10 @@ class CubeControls(QtWidgets.QWidget):
             plotted.add(self.y_combo.currentText())
         want = [d for d in dims if d not in plotted]
         if [r.dim for r in self.rows] == want and all(r.n == da.sizes[r.dim] for r in self.rows):
+            # same rows, but possibly ANOTHER file of the same shape: refresh the
+            # coordinate values the rows display, keep what the operator chose
+            for r in self.rows:
+                r.set_axis(*self._axis(r.dim, da))
             return
         keep = {r.dim: r.state() for r in self.rows}
         for r in self.rows:
@@ -346,15 +353,18 @@ class CubeControls(QtWidgets.QWidget):
             r.deleteLater()
         self.rows = []
         for d in want:
-            coords = (np.asarray(self.ds[d].values) if d in self.ds.coords
-                      else np.arange(da.sizes[d]))
-            unit = self.ds[d].attrs.get("units", "") if d in self.ds.coords else ""
-            row = DimRow(d, coords, unit)
+            row = DimRow(d, *self._axis(d, da))
             if d in keep:
                 row.restore(keep[d])
             row.changed.connect(self.changed.emit)
             self.rows_box.addWidget(row)
             self.rows.append(row)
+
+    def _axis(self, d: str, da: xr.DataArray) -> tuple[np.ndarray, str]:
+        """A dim's coordinate values and unit (0..n-1 and no unit without one)."""
+        if d in self.ds.coords:
+            return np.asarray(self.ds[d].values), self.ds[d].attrs.get("units", "")
+        return np.arange(da.sizes[d]), ""
 
     def _det_changed(self):
         self._rebuild()
@@ -956,6 +966,9 @@ class LinePanel(_Panel):
     def set_dataset(self, ds):
         self.controls.set_dataset(ds)
         self._selection_changed()
+        # _selection_changed refills the list only when the DIMS change; a new
+        # file of the same shape has other coordinate values to list
+        self._fill_values()
 
     def _selection_changed(self):
         dims = [d for d in self.controls.dims() if d != self.controls.x_combo.currentText()]
@@ -972,14 +985,18 @@ class LinePanel(_Panel):
         self.redraw()
 
     def _fill_values(self):
-        self.values.clear()
         ds, d = self.host.ds, self.along_combo.currentText()
         if ds is None or not d:
+            self.values.clear()
             self.add_sel_btn.setEnabled(False)
             return
         n = self.controls.current_da().sizes[d]
-        for i in range(n):
-            self.values.addItem(f"{d} = {V.coord_text(ds, d, i)}")
+        texts = [f"{d} = {V.coord_text(ds, d, i)}" for i in range(n)]
+        # rebuilt only when the text changes, so the operator's selection
+        # survives a redraw of the same data
+        if texts != [self.values.item(i).text() for i in range(self.values.count())]:
+            self.values.clear()
+            self.values.addItems(texts)
         self.add_sel_btn.setEnabled(True)
 
     # ---- curves -----------------------------------------------------------
@@ -1068,11 +1085,11 @@ class LinePanel(_Panel):
             self.legend.addItem(self.preview, f"preview: {preview.label}")
         else:
             self.preview.setData([], [])
-        ref = shown[0] if shown else preview
-        if ref is not None:
-            self.plot.setLabel("bottom", E.axis_title(ref.x_name, ref.x_unit))
-            self.plot.setLabel("left", E.axis_title(ref.y_name, ref.y_unit if norm == "none"
-                                                    else E.NORMS[norm]))
+        ref = shown if shown else ([preview] if preview is not None else [])
+        if ref:
+            xt, yt = E.curve_axis_titles(ref, norm)       # a unit only if all share it
+            self.plot.setLabel("bottom", xt)
+            self.plot.setLabel("left", yt)
         self.plot.setLogMode(y=self.logy.isChecked())
 
     def _hover(self, pos):

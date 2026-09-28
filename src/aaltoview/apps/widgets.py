@@ -98,6 +98,15 @@ class DimRow(QtWidgets.QWidget):
             w.blockSignals(False)
         self._sync()
 
+    def set_axis(self, coords: np.ndarray, unit: str = "") -> None:
+        """New coordinate VALUES for an axis of the same length (another file of
+        the same shape). Only the labels change; the operator's choice (the
+        index held, the range averaged) stays. Without this the row went on
+        showing the previous file's values, e.g. "1 GHz" over a 6 GHz slice."""
+        self.coords = np.asarray(coords)
+        self.unit = unit
+        self._sync()
+
     # ---- internals --------------------------------------------------------
     def _mode_changed(self):
         self._sync()

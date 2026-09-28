@@ -36,7 +36,11 @@ def complex_names(ds: xr.Dataset) -> list[str]:
     out = []
     for name, var in ds.data_vars.items():
         pair = var.attrs.get("complex_pair")
-        if pair and var.attrs.get("complex_part") == "real":
+        # both halves must be there: a pair with its imaginary half missing
+        # (a half-written file) cannot be recombined, and listing it would
+        # also hide the real half that IS readable
+        if (pair and var.attrs.get("complex_part") == "real"
+                and f"{pair}_imag" in ds.data_vars):
             out.append(pair)
     return out
 

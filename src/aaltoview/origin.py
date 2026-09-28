@@ -34,7 +34,7 @@ from pathlib import Path
 import numpy as np
 
 from .export import (Curve, Map, NORMS, Selection, axis_title, displayed_y,
-                     is_uniform)
+                     is_uniform, share_one_x)
 
 
 def available() -> str | None:
@@ -72,8 +72,7 @@ def push_curves(curves: list[Curve], norm: str = "none", offset: float = 0.0,
     op = _op()
     book = op.new_book("w", lname=name)
     wks = book[0]
-    shared = all(c.x.shape == shown[0].x.shape and np.array_equal(c.x, shown[0].x)
-                 for c in shown)
+    shared = share_one_x(shown)          # same rule as the .dat/.csv export
     pairs = []                         # (y column, x column) for the graph
     col = 0
     if shared:

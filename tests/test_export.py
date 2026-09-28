@@ -302,3 +302,58 @@ def test_curves_and_a_map_arrive_in_origin():
         assert tuple(ms.xymap) == (0.0, 1.0, 1.0, 4.0)
     finally:
         op.detach()
+
+
+# ───────────────────── deep clean 2026-09-28: proven bugs ─────────────────────
+
+@pytest.mark.parametrize("y", [np.zeros(4),                        # a dead channel
+                               np.full(4, 3.0),                     # a flat line
+                               np.array([np.nan, 0.0, 1.0, 2.0])])  # first real point 0
+@pytest.mark.parametrize("mode", ["peak", "minmax", "first"])
+def test_the_notebook_normalises_edge_cases_like_the_viewer(y, mode):
+    """The notebook carries its own normalize(); on a flat or zero curve it
+    divided by zero (NaN / inf) where the viewer leaves the curve as it is, so
+    the notebook drew a different curve from the screen."""
+    ns: dict = {}
+    exec(E._NB_HELPERS, ns)
+    with np.errstate(all="ignore"):
+        got = ns["normalize"](y, mode)
+    np.testing.assert_array_equal(got, E.normalize(y, mode))
+
+
+def test_curves_with_equal_numbers_on_different_axes_keep_their_own_x(tmp_path):
+    """A row cut (along x) and a column cut (along y) of a square raster have
+    the SAME coordinate numbers, 0..2 um. They were written with one shared X
+    column named after the first curve, so the y cut was labelled as a function
+    of x."""
+    ds = xr.Dataset({"kerr": (("y", "x"), np.arange(9.0).reshape(3, 3))},
+                    coords={"y": ("y", [0.0, 1.0, 2.0], {"units": "um"}),
+                            "x": ("x", [0.0, 1.0, 2.0], {"units": "um"})})
+    row = E.make_curve(ds, E.Selection("kerr", x="x", slices={"y": Slice("at", 1)}))
+    col = E.make_curve(ds, E.Selection("kerr", x="y", slices={"x": Slice("at", 1)}))
+    p = E.write_curves(tmp_path / "c.dat", [row, col])
+    names = p.read_text(encoding="utf-8").splitlines()[0].split("\t")
+    assert names == ["x", "kerr", "y", "kerr"]
+
+
+def test_axis_labels_of_mixed_curves_do_not_claim_one_unit():
+    """Overlaying a Kerr curve (mdeg) and a reflectivity curve (V) labelled the
+    exported Y axis "signal (mdeg)" -- the unit of whichever curve came first."""
+    ds = _cube()
+    ds["refl"] = (("freq", "y", "x"), ds["kerr"].values * 0 + 1.0, {"units": "V"})
+    k = E.make_curve(ds, E.Selection("kerr", x="y"))
+    r = E.make_curve(ds, E.Selection("refl", x="y"))
+    fig = E.figure_curves([k, r])
+    assert "mdeg" not in fig.axes[0].get_ylabel()
+    fig = E.figure_curves([k, E.make_curve(ds, E.Selection("kerr", x="y"))])
+    assert fig.axes[0].get_ylabel() == "kerr (mdeg)"
+
+
+def test_a_half_written_complex_pair_is_not_offered_as_complex():
+    """A file with `s_real` (tagged as a pair) but no `s_imag` listed "s" --
+    which then could not be opened -- and hid `s_real`, the data that IS there."""
+    from aaltoview.view import detector, detector_names
+    ds = xr.Dataset({"s_real": (("f",), np.arange(3.0),
+                                {"complex_pair": "s", "complex_part": "real"})})
+    assert detector_names(ds) == ["s_real"]
+    assert detector(ds, "s_real").values.tolist() == [0.0, 1.0, 2.0]

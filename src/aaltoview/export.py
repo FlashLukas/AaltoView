@@ -321,6 +321,26 @@ def axis_title(name: str, unit: str) -> str:
     return f"{name} ({unit})" if unit else name
 
 
+def curve_axis_titles(shown: list[Curve], norm: str = "none") -> tuple[str, str]:
+    """(X title, Y title) for a set of overlaid curves.
+
+    A unit is printed only when EVERY curve has it: a Kerr curve (mdeg) and a
+    reflectivity curve (V) on one plot have no common unit, and labelling the
+    axis with the first curve's unit would be wrong for the other one.
+    """
+    if not shown:
+        return "", ""
+    xnames = list(dict.fromkeys(c.x_name for c in shown))
+    xunits = {c.x_unit for c in shown}
+    xt = axis_title(" | ".join(xnames), xunits.pop() if len(xunits) == 1 else "")
+    ynames = {c.y_name for c in shown}
+    yname = ynames.pop() if len(ynames) == 1 else "signal"
+    if norm != "none":
+        return xt, axis_title(yname, NORMS[norm])
+    yunits = {c.y_unit for c in shown}
+    return xt, axis_title(yname, yunits.pop() if len(yunits) == 1 else "")
+
+
 # ─────────────────────────────── text files ───────────────────────────────────
 
 def _delimiter(path: Path) -> str:
@@ -329,6 +349,20 @@ def _delimiter(path: Path) -> str:
 
 def _num(v: float) -> str:
     return "" if not np.isfinite(v) else repr(float(v))
+
+
+def share_one_x(shown: list[Curve]) -> bool:
+    """Can these curves be written against ONE X column?
+
+    Only when the X values AND the quantity they measure are the same. Equal
+    numbers are not enough: a row cut (along x) and a column cut (along y) of a
+    square raster both run 0 ... 20 um, and one shared column named "x" would
+    label the y cut as a function of x.
+    """
+    first = shown[0]
+    return all(c.x_name == first.x_name and c.x_unit == first.x_unit
+               and c.x.shape == first.x.shape and np.array_equal(c.x, first.x)
+               for c in shown)
 
 
 def write_curves(path: str | Path, curves: list[Curve], norm: str = "none",
@@ -347,8 +381,7 @@ def write_curves(path: str | Path, curves: list[Curve], norm: str = "none",
     if not shown:
         raise ValueError("no visible curves to write")
     ys = displayed_y(curves, norm, offset)
-    shared = all(c.x.shape == shown[0].x.shape and np.array_equal(c.x, shown[0].x)
-                 for c in shown)
+    shared = share_one_x(shown)
     cols, names, units, notes = [], [], [], []
     if shared:
         cols.append(shown[0].x); names.append(shown[0].x_name)
@@ -414,10 +447,9 @@ def figure_curves(curves: list[Curve], norm: str = "none", offset: float = 0.0,
     for c, y in zip(shown, displayed_y(curves, norm, offset)):
         ax.plot(c.x, y, marker="o", ms=2.5, lw=1.2, label=c.label)
     if shown:
-        ax.set_xlabel(axis_title(shown[0].x_name, shown[0].x_unit))
-        yl = shown[0].y_name if len({c.y_name for c in shown}) == 1 else "signal"
-        ax.set_ylabel(axis_title(yl, shown[0].y_unit if norm == "none" else
-                                 NORMS[norm]))
+        xt, yt = curve_axis_titles(shown, norm)       # a unit only if all share it
+        ax.set_xlabel(xt)
+        ax.set_ylabel(yt)
     if logy:
         ax.set_yscale("log")
     if 1 < len(shown) <= 16:
@@ -529,12 +561,16 @@ def normalize(v, mode):
     fin = v[np.isfinite(v)]
     if mode == "none" or fin.size == 0:
         return v
+    # the same guards as the viewer: a flat or zero curve is left as it is
+    # rather than divided by zero (which would draw NaN / inf instead)
     if mode == "peak":
-        return v / np.max(np.abs(fin))
+        m = np.max(np.abs(fin))
+        return v / m if m > 0 else v
     if mode == "minmax":
-        return (v - fin.min()) / (fin.max() - fin.min())
+        lo, hi = fin.min(), fin.max()
+        return (v - lo) / (hi - lo) if hi > lo else v - lo
     if mode == "first":
-        return v / fin[0]
+        return v / fin[0] if fin[0] != 0 else v
     if mode == "zero_mean":
         return v - fin.mean()
     raise ValueError(mode)
@@ -640,8 +676,8 @@ def notebook_cells(nb_dir: Path, m: Map | None = None, style: MapStyle | None = 
             "    yv = normalize(y.values, NORM) + k * OFFSET\n"
             "    lines.append((x, yv))\n"
             "    ax.plot(x, yv, marker='o', ms=2.5, lw=1.2, label=c['label'])\n"
-            f"ax.set_xlabel({axis_title(curves[0].x_name, curves[0].x_unit)!r})\n"
-            f"ax.set_ylabel({curves[0].y_name!r})\n"
+            f"ax.set_xlabel({curve_axis_titles(curves, norm)[0]!r})\n"
+            f"ax.set_ylabel({curve_axis_titles(curves, norm)[1]!r})\n"
             "if LOGY:\n"
             "    ax.set_yscale('log')\n"
             "ax.legend(fontsize=7, frameon=False)\n"
