@@ -109,7 +109,7 @@ def test_curves_with_one_x_share_one_column(tmp_path):
     cs = E.curves_along(ds, E.Selection("kerr", x="x"), "freq", [0, 1])
     rows = (tmp_path / "c.csv")
     E.write_curves(rows, cs)
-    lines = rows.read_text(encoding="utf-8").splitlines()
+    lines = rows.read_text(encoding="utf-8-sig").splitlines()
     assert lines[0] == "x,kerr,kerr"                    # long names
     assert lines[1] == "um,mdeg,mdeg"                   # units
     assert lines[2].startswith(',"freq = 1 GHz, y = 0 um"')   # labels, quoted: they
@@ -127,6 +127,26 @@ def test_curves_with_different_x_get_their_own_columns(tmp_path):
     assert rows[5] == ["", "", "20.0", "120.0"]          # the short curve ends empty, not 0
 
 
+BOM = "﻿".encode("utf-8")          # the UTF-8 byte-order mark
+
+
+def test_a_csv_carries_a_bom_so_excel_reads_the_units_but_a_dat_does_not(tmp_path):
+    # Excel opens a .csv as the Windows codepage unless the file starts with a
+    # UTF-8 byte-order mark, and "µm" / "°" come out as garbage. A .dat is
+    # read by numpy / gnuplot / Origin, which stumble over a BOM, so it stays plain.
+    ds = _cube()
+    ds["x"].attrs["units"] = "µm"
+    cs = E.curves_along(ds, E.Selection("kerr", x="x"), "freq", [0])
+    csv_bytes = E.write_curves(tmp_path / "c.csv", cs).read_bytes()
+    dat_bytes = E.write_curves(tmp_path / "c.dat", cs).read_bytes()
+    assert csv_bytes.startswith(BOM)
+    assert not dat_bytes.startswith(BOM)
+    assert "µm" in csv_bytes.decode("utf-8-sig")
+    m, _ = E.make_map(ds, E.Selection("kerr", x="x", y="freq", slices={"y": Slice("at", 0)}))
+    assert E.write_map(tmp_path / "m.csv", m).read_bytes().startswith(BOM)
+    assert not E.write_map(tmp_path / "m.dat", m).read_bytes().startswith(BOM)
+
+
 # ───────────────────────────────── maps ───────────────────────────────────────
 
 def test_a_map_file_has_the_axes_and_the_orientation_on_screen(tmp_path):
@@ -138,7 +158,7 @@ def test_a_map_file_has_the_axes_and_the_orientation_on_screen(tmp_path):
     assert rows[0][1:] == ["0.0", "1.0"]                  # X across the top
     assert [r[0] for r in rows[1:]] == ["1.0", "2.0", "3.0", "4.0"]   # Y down the side
     assert rows[3][1:] == ["300.0", "301.0"]
-    xyz = E.write_map(tmp_path / "m.csv", m, "xyz").read_text(encoding="utf-8").splitlines()
+    xyz = E.write_map(tmp_path / "m.csv", m, "xyz").read_text(encoding="utf-8-sig").splitlines()
     assert xyz[0] == "x,freq,kerr" and xyz[1] == "um,GHz,mdeg"
     assert xyz[2 + 5] == "1.0,3.0,301.0"                  # row-major: (y=3, x=1)
 

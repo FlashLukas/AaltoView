@@ -347,6 +347,18 @@ def _delimiter(path: Path) -> str:
     return "," if path.suffix.lower() == ".csv" else "\t"
 
 
+def _encoding(path: Path) -> str:
+    """UTF-8 with a byte-order mark for .csv, plain UTF-8 for everything else.
+
+    A .csv is usually opened by double-clicking it into Excel, which reads a
+    file WITHOUT a BOM in the Windows codepage -- so the units row turns "µm"
+    into "Âµm". The BOM is how Excel learns the file is UTF-8. A .dat goes to
+    numpy / gnuplot / Origin instead, some of which read the BOM as part of
+    the first column name, so that one stays without.
+    """
+    return "utf-8-sig" if path.suffix.lower() == ".csv" else "utf-8"
+
+
 def _num(v: float) -> str:
     return "" if not np.isfinite(v) else repr(float(v))
 
@@ -393,7 +405,7 @@ def write_curves(path: str | Path, curves: list[Curve], norm: str = "none",
         units.append(c.y_unit if norm == "none" else "")
         notes.append(c.label + ("" if norm == "none" else f" [{NORMS[norm]}]"))
     n = max(len(c) for c in cols)
-    with open(path, "w", newline="", encoding="utf-8") as f:
+    with open(path, "w", newline="", encoding=_encoding(path)) as f:
         w = csv.writer(f, delimiter=_delimiter(path))
         w.writerow(names); w.writerow(units); w.writerow(notes)
         for i in range(n):
@@ -411,7 +423,7 @@ def write_map(path: str | Path, m: Map, fmt: str = "matrix") -> Path:
                   and it survives uneven spacing.
     """
     path = Path(path)
-    with open(path, "w", newline="", encoding="utf-8") as f:
+    with open(path, "w", newline="", encoding=_encoding(path)) as f:
         w = csv.writer(f, delimiter=_delimiter(path))
         if fmt == "matrix":
             corner = f"{axis_title(m.y_name, m.y_unit)} \\ {axis_title(m.x_name, m.x_unit)}"
