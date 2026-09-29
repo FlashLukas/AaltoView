@@ -38,6 +38,7 @@ simulated data (see [Try it without lab data](#try-it-without-lab-data)).*
   | Save data | `.dat` / `.csv` with Long Name / Units / Comments header rows; a map as a matrix or XYZ columns |
   | Send to Origin | into a running Origin (or starts one): worksheet + graph, or matrix + colour map |
   | Notebook | a Jupyter notebook that **recomputes** the view from the `.nc` files |
+  | Analysis | (1D plots) the curves into an **analysis module**: see below |
 
 ![spectra from two measurements overlaid](docs/curves.png)
 
@@ -57,6 +58,33 @@ a complex signal are taken coherently.*
 | ![normalised, stacked field sweeps](docs/curves-normalised-light.png) | ![map with every line normalised](docs/map-rows-light.png) |
 | Field sweeps at 6–12 GHz, each normalised to its peak and stacked. | The same kind of map with every frequency line scaled to its own peak, so the resonance can be followed where the signal is weak. Light theme. |
 
+## Analysis modules
+
+Fits and other analyses are separate programs that the viewer sends curves to
+(**1D plots → Analysis**). Several can be open at once, and a busy or crashed
+module never takes the viewer down. A module is a folder in
+**`AnalysisModules/`**: drop one in and the viewer lists it. Its packages are
+installed the first time it starts.
+
+- **FMR fit** ([AnalysisModules/fmr-fit](AnalysisModules/fmr-fit/README.md)): complex
+  Lorentzian for VNA data. It gives the resonance position, the linewidth
+  (HWHM and FWHM, with 1σ errors), the amplitude and the mixing phase. It fits
+  Re and Im together, has a fit range, several peaks, and fixed or bounded
+  parameters, and exports its results as a table with one row per curve
+  (`.csv`, clipboard, Origin). Its **Dispersion** tab then fits all the
+  resonances with one magnetic model: γ, M_eff, in-plane uniaxial, 4- and
+  6-fold anisotropy, PSSW exchange (A) and damping (α, ΔH0). It handles field
+  sweeps at any angle, frequency sweeps, and angle series.
+
+![FMR fit: four field sweeps fitted](docs/fmr-fit.png)
+
+*The simulated field sweeps at 6–12 GHz, sent from 1D plots and fitted with
+**Fit all**. The resonance fields and widths agree with the Kittel formula the
+data was made from; the tests check that.*
+
+Writing a new module: [docs/ANALYSIS_MODULES.md](docs/ANALYSIS_MODULES.md)
+(`tools/new_analysis_module.py` sets one up).
+
 ## Install and run
 
 ```bash
@@ -66,7 +94,9 @@ uv sync --extra gui                  # add --extra origin for "Send to Origin"
 uv run aaltoview             # or: uv run aaltoview path\to\scan.nc --folder D:\data
 ```
 
-`uv` brings its own Python (3.11 or newer). The `origin` extra installs
+`uv` brings its own Python (3.11 or newer). Analysis modules install their own
+packages the first time they start (`uv sync --all-packages --extra gui` does all
+of them at once). The `origin` extra installs
 OriginLab's `originpro` package and works on Windows with Origin 2021 or newer
 installed; without it, every other export still works.
 
@@ -134,7 +164,7 @@ autocorrection.
 ## Tests
 
 ```bash
-uv run pytest -q                              # 42 tests, offline, GUI offscreen
+uv run pytest -q                              # viewer + modules, offline, GUI offscreen
 uv run python tools/render_docs.py            # refresh the screenshots in docs/
 $env:AALTOVIEW_TEST_ORIGIN = "1"; uv run pytest -q -k origin    # also pushes into Origin
 ```

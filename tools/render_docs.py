@@ -176,6 +176,82 @@ def pose_map_rows(v):
     v.tabs.setCurrentWidget(m)
 
 
+def shot_fit(app, name: str, theme_name: str):
+    """The FMR fit module (AnalysisModules/fmr-fit) with the demo field sweeps, all
+    fitted -- what arrives after 1D plots -> Analysis > FMR fit."""
+    try:
+        from fmr_fit.app import FitWindow
+    except ImportError:
+        print("  (fmr_fit not installed: uv sync --all-packages --extra gui) -- skipped")
+        return
+    from aaltoview import export as E
+    from aaltoview.apps import viewer as VW
+    from aaltoview.data import load
+    theme.set_theme(theme_name)
+    VW.configure_pyqtgraph()
+    theme.apply(app)
+    path = next(DATA.glob("*/*_field_sweeps.nc"))
+    ds = load(path).load()
+    curves = E.curves_along(ds, E.Selection("lockin", x="field"), "rf_freq", range(4), path)
+    win = FitWindow()
+    win.setWindowTitle("FMR fit")
+    win.resize(*SIZE)
+    win.show()
+    pump(app, 0.3)
+    win.add_curves(curves)
+    win.fit_all()
+    win.curve_list.setCurrentItem(win.curve_list.topLevelItem(1))
+    pin_font(app)
+    win.resize(*SIZE)
+    pump(app, 1.5)
+    out = DOCS / f"{name}.png"
+    win.grab().save(str(out))
+    print(f"  {out.relative_to(HERE.parent)}")
+    win.close()
+    win.deleteLater()
+    pump(app, 0.2)
+
+
+def shot_dispersion(app, name: str, theme_name: str):
+    """The Dispersion tab on the anisotropic demo film: field sweeps at 36
+    in-plane angles, fitted, then uniaxial + 4-fold + 6-fold."""
+    try:
+        from fmr_fit.app import FitWindow
+    except ImportError:
+        print("  (fmr_fit not installed) -- skipped")
+        return
+    from aaltoview import export as E
+    from aaltoview.apps import viewer as VW
+    from aaltoview.data import load
+    theme.set_theme(theme_name)
+    VW.configure_pyqtgraph()
+    theme.apply(app)
+    path = next(DATA.glob("*/*_angle_field_sweeps.nc"))
+    ds = load(path).load()
+    curves = E.curves_along(ds, E.Selection("s21", x="field"), "phi_H", range(36), path)
+    win = FitWindow()
+    win.setWindowTitle("FMR fit")
+    win.resize(*SIZE)
+    win.show()
+    pump(app, 0.3)
+    win.add_curves(curves)
+    win.fit_all()
+    win.tabs.setCurrentWidget(win.dispersion)
+    tab = win.dispersion
+    for box in (tab.uni, tab.four, tab.six):
+        box.setChecked(True)
+    tab.fit()
+    pin_font(app)
+    win.resize(*SIZE)
+    pump(app, 1.5)
+    out = DOCS / f"{name}.png"
+    win.grab().save(str(out))
+    print(f"  {out.relative_to(HERE.parent)}")
+    win.close()
+    win.deleteLater()
+    pump(app, 0.2)
+
+
 def main() -> int:
     global DATA
     # A NEUTRAL folder: its path is on screen, and a published picture must not
@@ -193,6 +269,10 @@ def main() -> int:
     shot(app, "curves", "dark", pose_curves)
     shot(app, "curves-normalised-light", "light", pose_normalised)
     shot(app, "map-rows-light", "light", pose_map_rows)
+    shot_fit(app, "fmr-fit", "dark")
+    shot_fit(app, "fmr-fit-light", "light")
+    shot_dispersion(app, "fmr-dispersion", "dark")
+    shot_dispersion(app, "fmr-dispersion-light", "light")
     return 0
 
 

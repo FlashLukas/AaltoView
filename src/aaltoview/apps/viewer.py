@@ -23,7 +23,8 @@ What is the same as AaltoView, and what is not:
   their origin attached, so curves from different files overlay (5 um away
   against 2 um away).
 * Export to Origin is a live push over COM (aaltoview/origin.py), plus plain
-  files. New: a Jupyter notebook that recomputes the view from the files.
+  files. New: a Jupyter notebook that recomputes the view from the files, and
+  "Analysis", which hands curves to an analysis module (analysis_link.py).
 * Not yet: the TR-MOKE corrections (laser repetition rate, harmonic, demod
   frequency folding, correction file, phase autocorrect). Deliberately left out
   until the maths is written down -- guessing at them would give wrong numbers
@@ -53,6 +54,7 @@ from PySide6 import QtCore, QtGui, QtWidgets
 from .. import export as E
 from .. import view as V
 from ..data import find_measurements, load, summarize
+from .analysis import AnalysisMenu
 from .theme import C, DEFAULT_THEME, apply, apply_window_icon, set_theme
 from .widgets import DimRow
 NONE_TEXT = "— none —"
@@ -407,6 +409,16 @@ class ExportBar(QtWidgets.QWidget):
             b.clicked.connect(fn)
             h.addWidget(b)
             self.buttons[text] = b
+        if hasattr(panel, "analysis_curves"):
+            # a menu, not a dialog: which modules are running is decided when
+            # it opens (apps/analysis.py)
+            b = QtWidgets.QPushButton("Analysis")
+            b.setToolTip("Send the curves to an analysis module (a fit, ...): one that is\n"
+                         "running, or start one. Each module is its own window.")
+            self.analysis_menu = AnalysisMenu(b, panel.analysis_curves, panel.say)
+            b.setMenu(self.analysis_menu)
+            h.addWidget(b)
+            self.buttons["Analysis"] = b
         h.addStretch(1)
 
 
@@ -1107,6 +1119,17 @@ class LinePanel(_Panel):
 
     def export_stem(self) -> str:
         return f"{self.host.stem()}_curves"
+
+    def analysis_curves(self) -> list[E.Curve]:
+        """The visible curves -- or, with none frozen yet, the dashed preview:
+        sending one sweep should not need an "Add current" first."""
+        shown = [c for c in self.curves if c.visible]
+        if shown:
+            return shown
+        sel = self.controls.selection()
+        if self.host.ds is not None and sel is not None:
+            return [E.make_curve(self.host.ds, sel, self.host.path)]
+        raise ValueError("no curves to send -- open a measurement first")
 
     def figure(self):
         return E.figure_curves(self._need_curves(), self.norm(), self.offset(),

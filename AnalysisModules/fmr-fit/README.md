@@ -1,0 +1,120 @@
+# FMR fit
+
+An AaltoView analysis module (drop-in: this folder in `AnalysisModules/`). It fits ferromagnetic resonances on 1-D curves
+measured by direct detection (a VNA's S21; not the derivative lineshape of a
+field-modulated lock-in).
+
+![FMR fit with the simulated field sweeps](../../docs/fmr-fit.png)
+
+## The model
+
+    S(x) = Σ_k A_k e^{iφ_k} Δ_k / (x0_k − x − iΔ_k)  +  b0 + b1 (x − xc)
+
+- **x0** is the resonance position (field or frequency: x is whatever the
+  sweep was).
+- **Δ is the HWHM** (half width at half maximum). The FWHM is 2Δ, and both
+  appear in the results.
+- **A** is the amplitude, in the unit of the data.
+- **φ is the mixing phase.** An uncalibrated VNA mixes the symmetric
+  (absorption) and antisymmetric (dispersion) shapes. Because φ is fitted,
+  the width comes out right regardless.
+- **b0, b1** are a constant or linear background (complex for complex data),
+  measured from the centre of the fit range xc.
+
+Fit modes:
+
+- **Re + Im together** (the default for complex data) fits both quadratures at
+  once. It gives the most reliable x0 and Δ.
+- **One channel** fits the part AaltoView showed. |S21| only works when the
+  background is much larger than the peak.
+
+**hand**: which way the complex signal turns through resonance. This depends
+on the sweep and the instrument, and complex conjugation cannot be undone by a
+phase. On *auto*, both are tried and the better one is kept.
+
+## Use
+
+1. In AaltoView, 1D plots: add the sweeps, then **Analysis → Start FMR fit
+   and send** (or **Send to FMR fit** if it is already open).
+2. Each curve arrives with guessed start values (dashed line).
+3. **Fit** fits the curve on screen. **Fit all** fits every curve with the same
+   model.
+4. In the parameter table you can type a start value, tick **Fixed**, or set
+   **Min/Max**. Drag the shaded band on the plot to fit only part of the sweep.
+5. **Peaks** > 1 is for the Kittel mode plus standing spin waves. A new peak is
+   guessed from what the others leave.
+6. A fit marked **⚠ check** has a width or amplitude smaller than its own error
+   bar. The fit converged, but the peak was not found.
+7. Results come out with one row per curve: the held coordinate (e.g.
+   rf_freq) first, then per peak the values with 1σ errors. Copy them, save
+   them as `.csv`/`.dat`, or send them to Origin (error columns are set as
+   error bars). **Save image** saves data, fit and residuals.
+
+## Dispersion: from resonances to material parameters
+
+![the Dispersion tab on the simulated anisotropic film](../../docs/fmr-dispersion.png)
+
+The second tab takes every fitted peak (x0 and FWHM, with errors) and fits them
+all with one magnetic model.
+
+- **Points**: one row per fitted peak.
+  - Untick a row to leave it out.
+  - **Role** says which mode the peak is: *uniform (Kittel)*, *PSSW n = 1, 2,
+    …*, or *ignore*. The strongest peak of each curve starts as uniform.
+- **Coordinates**: where each resonance was measured, taken from the file's
+  dimensions and their units.
+  - Field is T/mT/Oe/A/m, frequency is Hz/MHz/GHz, and an angle is deg/rad.
+    An angle named theta/polar is the polar angle; any other angle is
+    in-plane.
+  - Whatever the file doesn't have is a constant: by default θ_H = 90°
+    (in-plane) and φ_H = 0.
+  - The curve's own x axis is what was swept.
+  - Field sweeps at an angle, frequency sweeps at a field, and mixtures of
+    both are all fitted together.
+- **Model** (energy per Ms, in field units; θ from the film normal):
+
+  E = −μ0H(m·h) + (M_eff/2) m_z² − (B_u/4) sin²θ [1 + cos 2(φ−φ_u)]
+      − (B_4/16) sin⁴θ [3 + cos 4(φ−φ_4)] − (B_6/36) sin⁶θ cos 6(φ−φ_6)
+
+  - For each point, the equilibrium of m is found numerically (the lowest
+    minimum). The resonance follows from the curvature of E (Smit–Beljers).
+  - With the field in-plane this reduces to the textbook formula
+    f = γ/2π·√((H cos(φ−φ_H) + B_u cos 2Δφ_u + B_4 cos 4Δφ_4 + B_6 cos 6Δφ_6)
+    (H cos(φ−φ_H) + M_eff + B_u cos² Δφ_u + B_4(3 + cos 4Δφ_4)/4 + B_6 cos 6Δφ_6/6)),
+    so B_n = 2K_n/Ms.
+  - Perpendicular anisotropy is in μ0M_eff = μ0Ms − 2K⊥/Ms.
+- **PSSW**: the exchange field H_ex,n is added to both stiffnesses. You can
+  fit it per mode, or through the exchange stiffness A with
+  H_ex,n = 2A(nπ/d)²/Ms (unpinned surfaces; needs d and μ0Ms, not M_eff).
+- **Damping**: frequency FWHM = α·γ/2π·(E_aa + E_bb) + ΔH0·df/dH; divide by
+  df/dx for a sweep along x.
+  - In-plane this is the familiar ΔH = ΔH0 + 2αf/(γ/2π) (FWHM).
+  - At other angles it includes the lag of the magnetisation behind the field.
+- **Fit** order: positions first, then α and ΔH0 of the uniform mode. The
+  position fit runs in stages: M_eff and exchange, then the anisotropy, then
+  γ with everything else. Without the stages, the fit fell into false minima.
+- **γ and M_eff** can only both be fitted when there is more than one point
+  of the Kittel curve, i.e. several frequencies or fields. With one, γ starts
+  fixed at g = 2.0023, and the status line says so.
+- **Results**: value ± 1σ with unit and meaning. You can copy them, save them
+  as `.csv`/`.dat`, send them to Origin, or save both plots as an image.
+
+## Tests
+
+- `tests/test_fmr_model.py` recovers known parameters from simulated signals,
+  including the Kittel resonance fields and linewidths of the demo data.
+- `tests/test_fmr_dispersion.py` checks the magnetic model against formulas
+  derived independently (the in-plane textbook formula with every anisotropy,
+  the perpendicular case, PSSW, the linewidth), then recovers anisotropies,
+  exchange stiffness and damping from synthetic points.
+- `tests/test_fmr_demo_chain.py` runs the whole chain on the simulated
+  anisotropic film of `tools/make_demo_data.py`, which is computed without
+  this module's code. The chain is curves → Lorentzian fits → points →
+  anisotropy, M_eff, γ, α.
+- `tests/test_fmr_app.py` and `tests/test_fmr_dispersion_tab.py` cover the
+  windows.
+
+## Next
+
+Planned: fitting every row of a map in one go, a notebook that repeats the
+fits, and a second-order perpendicular term (K2) if thin PMA films need it.

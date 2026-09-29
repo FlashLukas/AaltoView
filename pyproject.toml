@@ -17,6 +17,7 @@ dependencies = [
 gui = [
     "PySide6>=6.7",
     "pyqtgraph>=0.13",
+    "pyzmq>=25",         # the link to analysis modules (aaltoview/analysis_link.py)
 ]
 # Push curves and maps straight into a running Origin (Windows, Origin 2021+
 # installed). originpro drives Origin over COM from OUTSIDE it; without this
@@ -27,6 +28,14 @@ origin = [
 
 [project.scripts]
 aaltoview = "aaltoview.apps.viewer:main"
+
+# Analysis modules are DROPPED into AnalysisModules/<name>/: a folder with a
+# module.toml (what the viewer lists) and a pyproject.toml (what it needs).
+# The glob makes each one a member of this workspace, so the viewer starts a
+# module with `uv run --all-packages`, which installs a new module's packages on
+# its first start. Nothing to register (docs/ANALYSIS_MODULES.md).
+[tool.uv.workspace]
+members = ["AnalysisModules/*"]
 
 [dependency-groups]
 dev = ["pytest>=8"]
@@ -43,4 +52,4 @@ where = ["src"]
 aaltoview = ["apps/icon.svg"]
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+testpaths = ["tests", "AnalysisModules/*/tests"]

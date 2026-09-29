@@ -101,8 +101,12 @@ def detector(ds: xr.Dataset, name: str) -> xr.DataArray:
 
 
 def apply_part(da: xr.DataArray, part: str) -> xr.DataArray:
-    """Complex -> real, the way the operator asked. A real array is returned as is."""
-    if not np.iscomplexobj(da.values):
+    """Complex -> real, the way the operator asked. A real array is returned as is.
+
+    part="complex" keeps the complex values (for analysis modules, which want
+    both quadratures; nothing is displayed that way).
+    """
+    if part == "complex" or not np.iscomplexobj(da.values):
         return da
     if part == "arg":
         out = xr.DataArray(np.angle(da.values), dims=da.dims, coords=da.coords)

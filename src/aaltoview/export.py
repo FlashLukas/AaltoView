@@ -104,6 +104,12 @@ class Curve:
     selection: Selection
     source: str | None = None       # the .nc file; None = unsaved (a live run)
     visible: bool = True
+    #: the COMPLEX values behind y when the detector is complex (y is only the
+    #: part on screen). An FMR fit wants both quadratures; see analysis_link.py.
+    z: np.ndarray | None = None
+    #: the dims held at one value, {dim: (value, unit)}: "this sweep was at
+    #: 8 GHz" as a number, so a fit result can be plotted against it
+    held: dict[str, tuple[float, str]] = field(default_factory=dict)
 
 
 @dataclass
@@ -195,11 +201,32 @@ def make_curve(ds: xr.Dataset, sel: Selection, source: str | Path | None = None,
     x = coords_of(ds, sel.x, y.size).copy()
     if label is None:
         label = describe_slices(ds, sel) or sel.detector
+    z = None
+    if np.iscomplexobj(da.values):
+        z = np.asarray(reduce_cube(da, sel.x, None, sel.slices, "complex").data.values,
+                       dtype=complex).copy()
     return Curve(x=x, y=y, label=label, x_name=sel.x, x_unit=units_of(ds, sel.x),
                  y_name=quantity_name(sel, np.iscomplexobj(da.values)),
                  y_unit="rad" if (sel.part == "arg" and np.iscomplexobj(da.values))
                  else units_of(ds, sel.detector),
-                 selection=sel, source=str(source) if source else None)
+                 selection=sel, source=str(source) if source else None,
+                 z=z, held=held_values(ds, sel))
+
+
+def held_values(ds: xr.Dataset, sel: Selection) -> dict[str, tuple[float, str]]:
+    """{dim: (value, unit)} for every dim held at ONE index -- a dim of length 1
+    too: "this sweep was at 10 GHz" is what an analysis needs, even when the
+    label leaves it out as obvious."""
+    da = detector(ds, sel.detector)
+    out = {}
+    for d in da.dims:
+        if d in (sel.x, sel.y):
+            continue
+        s = sel.slices.get(d, Slice())
+        i0, i1 = s.span(da.sizes[d])
+        if i0 == i1:
+            out[d] = (float(coords_of(ds, d, da.sizes[d])[i0]), units_of(ds, d))
+    return out
 
 
 def curves_along(ds: xr.Dataset, sel: Selection, dim: str, indices,

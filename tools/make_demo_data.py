@@ -12,13 +12,22 @@ The physics is a thin in-plane magnetised film (permalloy-like):
 
     Kittel         f0(B)   = g * sqrt(B (B + Ms))            g = 28 GHz/T, Ms = 1 T
     PSSW (n = 1)   f1(B)   = g * sqrt((B + Bex)(B + Bex + Ms))    Bex = 150 mT, weaker
-    linewidth      df      = df0 + 2 alpha f0                 alpha = 0.008
+    linewidth      df      = alpha g (2 (B + Bex) + Ms) + dB0 * df0/dB   (FWHM in f)
+                             alpha = 0.008, dB0 = 1.5 mT: a field sweep then shows
+                             FWHM = dB0 + 2 alpha f / g, the textbook form
     response       chi(f)  = (df/2) / (f0 - f - i df/2)       |chi| = 1 on resonance,
                                                               the phase turns by 180 deg
     propagation    exp(-d / L) * exp(i k d)                   L = 5 um, k from lambda
 
 plus a detection phase offset and complex Gaussian noise. Numbers are chosen to
 look like a lab measurement, not to fit any real sample.
+
+A second, ANISOTROPIC film for the angle-dependent files (5, 6): Meff = 1.4 T,
+in-plane uniaxial Bu = 12 mT along 90 deg, 4-fold B4 = 18 mT along 0 deg, 6-fold
+B6 = 3 mT along 15 deg, alpha = 0.004, dB0 = 1 mT -- field in the plane at angle
+phi_H. The resonance comes from the textbook in-plane formula with the
+equilibrium angle found by brute force (inplane() below), deliberately NOT from
+the FMR fit module's code, so that module can be tested against it.
 """
 
 from __future__ import annotations
@@ -34,8 +43,11 @@ G = 28.0          # GHz per T
 MS = 1000.0       # mT
 BEX = 150.0       # mT, first perpendicular standing spin wave
 ALPHA = 0.008
-DF0 = 0.18        # GHz, inhomogeneous linewidth
+DB0 = 1.5         # mT, inhomogeneous linewidth (FWHM in field)
 PHASE0 = 0.6      # rad, detection phase
+#: the anisotropic film of the angle-dependent files
+ANISO = dict(Meff=1400.0, Bu=12.0, phi_u=90.0, B4=18.0, phi_4=0.0, B6=3.0, phi_6=15.0,
+             alpha=0.004, dB0=1.0)
 RNG = np.random.default_rng(20260916)
 
 
@@ -44,8 +56,14 @@ def kittel(b_mT, extra=0.0):
     return G * np.sqrt(np.clip(b * (b + MS), 0, None)) / 1000.0
 
 
-def chi(f, f0, amp=1.0):
-    df = DF0 + 2 * ALPHA * f0
+def linewidth(b_mT, extra=0.0):
+    """FWHM in frequency (GHz) of the isotropic film: Gilbert + inhomogeneous."""
+    b = np.maximum(np.asarray(b_mT, dtype=float) + extra, 1e-3)
+    dfdb = G / 1000 * (2 * b + MS) / (2 * np.sqrt(b * (b + MS)))
+    return ALPHA * G / 1000 * (2 * b + MS) + DB0 * dfdb
+
+
+def chi(f, f0, amp, df):
     return amp * (df / 2) / (f0 - f - 1j * df / 2)
 
 
@@ -54,9 +72,52 @@ def fmr(field, freq, amp_uV=18.0):
     B, F = np.meshgrid(field, freq, indexing="ij")
     f0, f1 = kittel(B), kittel(B, BEX)
     # the drive efficiency of a stripline falls with frequency
-    z = chi(F, f0, amp_uV * (4.0 / np.maximum(F, 4.0)) ** 0.5)
-    z += chi(F, f1, 0.22 * amp_uV)
+    z = chi(F, f0, amp_uV * (4.0 / np.maximum(F, 4.0)) ** 0.5, linewidth(B))
+    z += chi(F, f1, 0.22 * amp_uV, linewidth(B, BEX))
     return z * np.exp(1j * PHASE0)
+
+
+def inplane(b_mT, phi_h_deg, a=ANISO):
+    """The anisotropic film, field in the plane: f0 (GHz) and the frequency FWHM
+    (GHz) for every field in b_mT. Textbook in-plane Kittel formula; the angle
+    of M by brute force on a 0.1 deg grid (the lowest minimum), refined by a
+    parabola through the three lowest grid points."""
+    b = np.asarray(b_mT, dtype=float)[:, None]
+    step = 0.1
+    grid = np.deg2rad(np.arange(-180.0, 180.0, step))
+
+    def energy(phi):
+        dh = phi - np.deg2rad(phi_h_deg)
+        du, d4, d6 = (phi - np.deg2rad(a[k]) for k in ("phi_u", "phi_4", "phi_6"))
+        return (-b * np.cos(dh) - a["Bu"] / 2 * np.cos(du) ** 2
+                - a["B4"] / 16 * (3 + np.cos(4 * d4)) - a["B6"] / 36 * np.cos(6 * d6))
+
+    E = energy(grid[None, :])
+    n = grid.size
+    i = np.argmin(E, axis=1)
+    r = np.arange(b.shape[0])
+    em, e0, ep = E[r, (i - 1) % n], E[r, i], E[r, (i + 1) % n]
+    curv = em - 2 * e0 + ep
+    shift = np.where(curv > 0, 0.5 * (em - ep) / np.where(curv > 0, curv, 1.0), 0.0)
+    phi = grid[i] + shift * np.deg2rad(step)
+    dh = phi - np.deg2rad(phi_h_deg)
+    du, d4, d6 = (phi - np.deg2rad(a[k]) for k in ("phi_u", "phi_4", "phi_6"))
+    b = b[:, 0]
+    e_pp = (b * np.cos(dh) + a["Bu"] * np.cos(2 * du) + a["B4"] * np.cos(4 * d4)
+            + a["B6"] * np.cos(6 * d6))
+    e_tt = (b * np.cos(dh) + a["Meff"] + a["Bu"] * np.cos(du) ** 2
+            + a["B4"] / 4 * (3 + np.cos(4 * d4)) + a["B6"] / 6 * np.cos(6 * d6))
+
+    f0 = G / 1000 * np.sqrt(np.clip(e_pp * e_tt, 0, None))
+    return f0, a["alpha"] * G / 1000 * (e_pp + e_tt)
+
+
+def inplane_width(b_mT, phi_h_deg, a=ANISO):
+    """f0 and the full frequency FWHM, with dB0 * df0/dB from a small step in B."""
+    f0, gilbert = inplane(b_mT, phi_h_deg, a)
+    fp, _ = inplane(np.asarray(b_mT) + 0.05, phi_h_deg, a)
+    fm, _ = inplane(np.asarray(b_mT) - 0.05, phi_h_deg, a)
+    return f0, gilbert + a["dB0"] * np.abs(fp - fm) / 0.1
 
 
 def noise(shape, sigma):
@@ -138,7 +199,7 @@ def main(argv=None) -> int:
     img = []
     for b in fields:
         f0 = kittel(b)
-        drive = chi(8.0, f0, 20.0)                  # how resonant 8 GHz is at this field
+        drive = chi(8.0, f0, 20.0, linewidth(b))    # how resonant 8 GHz is at this field
         lam = 2.2 + 0.06 * (b - 60.0)               # um; the wavelength moves with field
         wave = np.exp(-X / 7.0) * np.exp(1j * 2 * np.pi * X / lam) * np.exp(-(Y / 7.5) ** 2)
         img.append(drive * wave * np.exp(1j * PHASE0))
@@ -168,6 +229,44 @@ def main(argv=None) -> int:
                    {"type": "array", "param": "rf_freq", "values": fr.tolist()},
                    lin("field", 0, 200, 401)], ["lockin"])}),
         out / "2026-09-16" / "131205_field_sweeps.nc", 1604.0)
+
+    # 5. the anisotropic film: field sweeps at 10 GHz, field rotated in the plane.
+    #    rf_freq is a dimension of length 1: the file says at which frequency.
+    phis = np.arange(0.0, 360.0, 10.0)
+    fa = np.linspace(0, 200, 401)
+    za = np.empty((1, phis.size, fa.size), dtype=complex)
+    for j, ph in enumerate(phis):
+        f0, df = inplane_width(fa, ph)
+        za[0, j] = chi(10.0, f0, 15.0, df) * np.exp(1j * PHASE0)
+    za += noise(za.shape, 0.3)
+    save(xr.Dataset(
+        complex_vars("s21", ("rf_freq", "phi_H", "field"), za, "uV"),
+        coords={"rf_freq": coord("rf_freq", [10.0], "GHz"),
+                "phi_H": coord("phi_H", phis, "deg"), "field": coord("field", fa, "mT")},
+        attrs={"name": "angle_field_sweeps", "_dims": ["rf_freq", "phi_H", "field"],
+               "comment": "anisotropic film: field sweeps at 10 GHz, in-plane angle 0-350 deg",
+               "recipe_json": recipe("angle_field_sweeps", "", [
+                   {"type": "array", "param": "phi_H", "values": phis.tolist()},
+                   lin("field", 0, 200, 401)], ["s21"])}),
+        out / "2026-09-17" / "101500_angle_field_sweeps.nc", 7400.0)
+
+    # 6. the same film: frequency sweeps at 40 mT, field rotated in the plane
+    ff = np.linspace(2, 16, 281)
+    zf = np.empty((1, phis.size, ff.size), dtype=complex)
+    for j, ph in enumerate(phis):
+        f0, df = inplane_width(np.array([40.0]), ph)
+        zf[0, j] = chi(ff, f0[0], 15.0, df[0]) * np.exp(1j * PHASE0)
+    zf += noise(zf.shape, 0.3)
+    save(xr.Dataset(
+        complex_vars("s21", ("field", "phi_H", "rf_freq"), zf, "uV"),
+        coords={"field": coord("field", [40.0], "mT"),
+                "phi_H": coord("phi_H", phis, "deg"), "rf_freq": coord("rf_freq", ff, "GHz")},
+        attrs={"name": "angle_freq_sweeps", "_dims": ["field", "phi_H", "rf_freq"],
+               "comment": "anisotropic film: VNA frequency sweeps at 40 mT, in-plane angle",
+               "recipe_json": recipe("angle_freq_sweeps", "", [
+                   {"type": "array", "param": "phi_H", "values": phis.tolist()},
+                   lin("rf_freq", 2, 16, 281)], ["s21"])}),
+        out / "2026-09-17" / "143000_angle_freq_sweeps.nc", 3900.0)
     return 0
 
 

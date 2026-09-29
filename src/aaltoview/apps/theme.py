@@ -103,7 +103,7 @@ ICON_FILE = Path(__file__).resolve().parent / "icon.svg"
 APP_ID = "Aalto.AaltoView"
 
 
-def apply_window_icon(app) -> None:
+def apply_window_icon(app, app_id: str = APP_ID) -> None:
     """Title-bar, Alt-Tab and taskbar icon (the suite's apply_window_icon).
 
     On Windows both steps are needed: setWindowIcon for Qt, and an explicit
@@ -111,14 +111,15 @@ def apply_window_icon(app) -> None:
     "Python" button with Python's icon. The ID is claimed only AFTER an icon
     is set: Windows caches the icon against the ID, and one run that claims it
     with no icon leaves it blank for good (AaltoFlow docs/DEVELOPER_NOTES.md gotcha #32).
-    Never fatal.
+    Never fatal. An analysis module passes its own `app_id`, so it gets its own
+    taskbar button instead of joining the viewer's.
     """
     if not ICON_FILE.exists():
         return
     app.setWindowIcon(QtGui.QIcon(str(ICON_FILE)))
     try:
         import ctypes
-        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(APP_ID)
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(app_id)
     except Exception:          # not Windows, or the call is unavailable
         pass
 
