@@ -22,6 +22,12 @@ The physics is a thin in-plane magnetised film (permalloy-like):
 plus a detection phase offset and complex Gaussian noise. Numbers are chosen to
 look like a lab measurement, not to fit any real sample.
 
+File 7 is a VNA as it really is: S21 frequency sweeps of the isotropic film
+at several fields, with the exact damped-oscillator lineshape
+chi = f0 df / (f0^2 - f^2 - i f df), a 3.2 ns cable delay, a standing-wave
+ripple and a loss sloping with frequency -- VNA_DELAY / VNA_RIPPLE below --
+plus a sweep at 500 mT, where nothing resonates in the band: the reference.
+
 A second, ANISOTROPIC film for the angle-dependent files (5, 6): Meff = 1.4 T,
 in-plane uniaxial Bu = 12 mT along 90 deg, 4-fold B4 = 18 mT along 0 deg, 6-fold
 B6 = 3 mT along 15 deg, alpha = 0.004, dB0 = 1 mT -- field in the plane at angle
@@ -45,10 +51,29 @@ BEX = 150.0       # mT, first perpendicular standing spin wave
 ALPHA = 0.008
 DB0 = 1.5         # mT, inhomogeneous linewidth (FWHM in field)
 PHASE0 = 0.6      # rad, detection phase
+#: the VNA of file 7
+VNA_DELAY = 3.2         # ns
+VNA_RIPPLE = (0.02, 3.3)  # relative amplitude, period in GHz
+VNA_DIP = 0.03          # the resonance, relative to the transmitted signal
+
+
+def vna_background(f):
+    """What the cables and the stripline do to S21, without the sample."""
+    amp, period = VNA_RIPPLE
+    return (0.8 * (1 - 0.012 * f) * (1 + amp * np.sin(2 * np.pi * f / period + 0.4))
+            * np.exp(-2j * np.pi * VNA_DELAY * f))
+
+
+def oscillator(f, f0, df):
+    """The damped-oscillator susceptibility, exact in f; = +i on resonance."""
+    return f0 * df / (f0 * f0 - f * f - 1j * f * df)
+
+
 #: the anisotropic film of the angle-dependent files
 ANISO = dict(Meff=1400.0, Bu=12.0, phi_u=90.0, B4=18.0, phi_4=0.0, B6=3.0, phi_6=15.0,
              alpha=0.004, dB0=1.0)
-RNG = np.random.default_rng(20260916)
+SEED = 20260916
+RNG = np.random.default_rng(SEED)
 
 
 def kittel(b_mT, extra=0.0):
@@ -59,7 +84,10 @@ def kittel(b_mT, extra=0.0):
 def linewidth(b_mT, extra=0.0):
     """FWHM in frequency (GHz) of the isotropic film: Gilbert + inhomogeneous."""
     b = np.maximum(np.asarray(b_mT, dtype=float) + extra, 1e-3)
-    dfdb = G / 1000 * (2 * b + MS) / (2 * np.sqrt(b * (b + MS)))
+    # df/dB diverges at zero field (the Kittel curve is vertical there), which
+    # made a ghost line 21 GHz wide at 0 mT; below 10 mT it is held
+    bs = np.maximum(b, 10.0)
+    dfdb = G / 1000 * (2 * bs + MS) / (2 * np.sqrt(bs * (bs + MS)))
     return ALPHA * G / 1000 * (2 * b + MS) + DB0 * dfdb
 
 
@@ -153,6 +181,11 @@ def save(ds: xr.Dataset, path: Path, seconds: float):
 
 
 def main(argv=None) -> int:
+    # reseeded on EVERY run: the files must not depend on how often this was
+    # called before in the same process (the tests call it several times, and
+    # the noise differed with their order -- found 2026-09-29)
+    global RNG
+    RNG = np.random.default_rng(SEED)
     argv = sys.argv[1:] if argv is None else argv
     out = Path(argv[0]) if argv else Path("demo_data")
 
@@ -267,6 +300,25 @@ def main(argv=None) -> int:
                    {"type": "array", "param": "phi_H", "values": phis.tolist()},
                    lin("rf_freq", 2, 16, 281)], ["s21"])}),
         out / "2026-09-17" / "143000_angle_freq_sweeps.nc", 3900.0)
+
+    # 7. VNA frequency sweeps with everything a real VNA adds; 500 mT = reference
+    fields7 = np.array([20.0, 40.0, 60.0, 80.0, 100.0, 500.0])
+    f7 = np.linspace(1.0, 20.0, 1901)
+    z7 = np.empty((fields7.size, f7.size), dtype=complex)
+    for j, b in enumerate(fields7):
+        f0 = kittel(b)
+        z7[j] = vna_background(f7) * (1 + VNA_DIP * np.exp(1j * PHASE0)
+                                      * oscillator(f7, f0, linewidth(b)))
+    z7 += noise(z7.shape, 0.0015)
+    save(xr.Dataset(
+        complex_vars("s21", ("field", "rf_freq"), z7, ""),
+        coords={"field": coord("field", fields7, "mT"), "rf_freq": coord("rf_freq", f7, "GHz")},
+        attrs={"name": "vna_freq_sweeps", "_dims": ["field", "rf_freq"],
+               "comment": "VNA S21: cable delay, ripple; 500 mT = reference (nothing in band)",
+               "recipe_json": recipe("vna_freq_sweeps", "", [
+                   {"type": "array", "param": "field", "values": fields7.tolist()},
+                   lin("rf_freq", 1, 20, 1901)], ["s21"])}),
+        out / "2026-09-18" / "110000_vna_freq_sweeps.nc", 2100.0)
     return 0
 
 

@@ -77,8 +77,10 @@ def test_field_sweeps_at_angles_give_the_anisotropy(field_rows):
     assert v["B6"] == pytest.approx(a["B6"], abs=0.4)
     assert v["phi_6"] == pytest.approx(a["phi_6"], abs=2.0)
     d = D.fit_damping(pts, r)
-    assert d.alpha == pytest.approx(a["alpha"], rel=0.1)
-    assert d.dH0 == pytest.approx(a["dB0"], abs=0.3)
+    # one frequency: alpha and dH0 are told apart only by how the width changes
+    # with the angle, so they are judged by their own error bars
+    assert abs(d.alpha - a["alpha"]) < 4 * d.alpha_err
+    assert abs(d.dH0 - a["dB0"]) < 4 * d.dH0_err
 
 
 def test_field_and_frequency_sweeps_together_separate_gamma(field_rows, freq_rows):

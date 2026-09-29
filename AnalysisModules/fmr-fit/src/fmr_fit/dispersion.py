@@ -642,9 +642,13 @@ def fit_positions(points: list[Point], settings: Settings,
     #   points of the Kittel curve per angle pin the RATIO poorly -- crawling for
     #   thousands of evaluations. gamma is close to its start (g ~ 2) for a metal
     #   film, so holding it until the rest is right is the physical order.
+    # * and with gamma held wrong in (2), freeing all 8 parameters at once
+    #   stalled in the curved gamma-Meff valley (gamma stayed at its start of
+    #   31, chi2_red 97 where 0.97 was there): (3) moves gamma and Meff alone.
     s1 = [n for n in free if n not in anis and n != "gamma"]
     s2 = s1 + anis
-    stages = [st for st in (s1, s2, free) if st]
+    s3 = s1 + (["gamma"] if "gamma" in free else [])
+    stages = [st for st in (s1, s2, s3, free) if st]
     stages = [st for i, st in enumerate(stages) if i == 0 or st != stages[i - 1]]
     out = None
     for stage in stages:

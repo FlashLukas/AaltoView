@@ -155,3 +155,61 @@ def test_fit_all_fits_only_the_selected_curves(win):
     assert "fitted 2 of 2 selected" in win.status.text()
     win.curve_list.clearSelection()
     assert win.fit_all_btn.text() == "Fit all"
+
+
+def _vna_curves(tmp_path):
+    import sys
+    from pathlib import Path
+    from aaltoview import export as E
+    from aaltoview.data import load
+    sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "tools"))
+    import make_demo_data as DEMO
+    DEMO.main([str(tmp_path)])
+    path = next(tmp_path.glob("*/*_vna_freq_sweeps.nc"))
+    ds = load(path).load()
+    return DEMO, E.curves_along(ds, E.Selection("s21", x="rf_freq"), "field", range(6), path)
+
+
+def test_a_reference_and_the_oscillator_on_vna_sweeps(win, tmp_path):
+    DEMO, curves = _vna_curves(tmp_path)
+    win.add_curves(curves)                                   # the last one: 500 mT
+    win.curve_list.setCurrentItem(win.curve_list.topLevelItem(2))    # 60 mT
+    win.ref_combo.setCurrentIndex(win.ref_combo.findText(curves[-1].label))
+    win.lineshape.setCurrentIndex(win.lineshape.findData("oscillator"))
+    win.baseline.setCurrentText("constant")
+    e = win.current()
+    assert e.reference[0] is win.entries[-1] and e.reference[1] == "divide"
+    f0, w = DEMO.kittel(60.0), DEMO.linewidth(60.0) / 2
+    win.region.setRegion((f0 - 10 * w, f0 + 10 * w))
+    win._range_dragged()
+    win.fit_all()
+    assert win.entries[-1].result is None          # the reference is not fitted
+    r = e.result
+    assert abs(r.values["p1_center"] - f0) < 4 * r.errors["p1_center"] + 1e-3
+    assert abs(r.values["p1_hwhm"] - w) < 4 * r.errors["p1_hwhm"]
+    for other in win.entries[:4]:                  # the range followed each peak
+        assert other.result is not None and other.reference is e.reference
+
+
+def test_derivative_divide_and_delay_from_the_window(win, tmp_path):
+    DEMO, curves = _vna_curves(tmp_path)
+    win.add_curves(curves[2:3])
+    win.lineshape.setCurrentIndex(win.lineshape.findData("oscillator"))
+    win.delay.setChecked(True)
+    win.dd.setChecked(True)
+    win.dd_k.setValue(10)
+    e = win.current()
+    assert e.setup.dd == 10 and e.setup.delay and "delay" in e.start
+    f0, w = DEMO.kittel(60.0), DEMO.linewidth(60.0) / 2
+    win.region.setRegion((f0 - 10 * w, f0 + 10 * w))
+    win._range_dragged()
+    win.fit()
+    assert e.result.values["p1_center"] == pytest.approx(f0, abs=0.05)
+    names = [win.table.item(r, 0).text() for r in range(win.table.rowCount())]
+    assert "electrical delay τ" in names
+    units = {win.table.item(r, 0).text(): win.table.item(r, 3).text()
+             for r in range(win.table.rowCount())}
+    assert units["electrical delay τ"] == "ns" and units["peak 1: amplitude A"] == ""
+    # a real channel: no delay, no derivative-divide
+    win.mode.setCurrentIndex(win.mode.findData("real"))
+    assert not win.dd.isEnabled() and win.current().setup.dd == 0

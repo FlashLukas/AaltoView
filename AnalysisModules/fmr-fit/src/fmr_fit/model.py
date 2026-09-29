@@ -34,6 +34,34 @@ resonance depends on the sweep (field or frequency) and on the instrument's
 sign convention. Complex conjugation cannot be undone by a phase, so in complex
 mode the fit tries both (Setup.hand = 0) and keeps the better one; the result
 says which it was. In real mode it does not matter (the phase absorbs it).
+
+Options for FREQUENCY sweeps, where a VNA is harder to fit than in field:
+
+* Setup.lineshape = "oscillator": the damped-oscillator form, exact in f,
+      chi(f) = 2 f0 dx / (f0^2 - f^2 - i f 2 dx)
+  instead of the Lorentzian, which is its near-resonance limit (same x0 and
+  HWHM dx). The Lorentzian is off by ~ dx/f0: a few % in f0 and the width for a
+  broad line at low frequency. For field sweeps keep the Lorentzian.
+* Setup.delay: the cable's electrical delay, the whole complex signal times
+  e^{-i 2 pi tau (x - xc)} -- the phase that winds with frequency. tau in 1/x
+  (ns for x in GHz), started from the phase slope at the ends of the range.
+* Setup.dd = k > 0: DERIVATIVE-DIVIDE (Maier-Flaig et al., Rev. Sci. Instrum.
+  89, 076101 (2018)). The data become
+      D(x) = (S(x+) - S(x-)) / ((x+ - x-) S(x)),    x+- = k points either side
+  which removes a background that MULTIPLIES the signal and varies slowly
+  (cable loss, impedance mismatch); the model goes through the same
+  transformation exactly: with S = B (1 + P), P the peaks,
+      D = (P(x+) - P(x-)) / ((x+ - x-)(1 + P(x))) + c0 + c1 (x - xc)
+  so the amplitude is RELATIVE to the background and (c0, c1) is what is left
+  of d ln B / dx. Complex data only.
+  A cable DELAY does not vary slowly: its phase turns by 2 pi tau (x+ - x) between
+  neighbours (0.6 rad for 3.2 ns and 30 MHz), which rotates the peaks in D. With
+  Setup.delay the model carries that exactly:
+      D = (e^{-i2pi tau (x+ - x)} (1 + P(x+)) - e^{-i2pi tau (x- - x)} (1 + P(x-)))
+          / ((x+ - x-)(1 + P(x))) + c0 + c1 (x - xc)
+  -- use both options together for a VNA frequency sweep.
+* reference(): subtract or divide by another sweep -- one at a field where
+  nothing resonates in the band -- before fitting (done by the caller).
 """
 
 from __future__ import annotations
@@ -49,9 +77,17 @@ BASELINES = ("constant", "linear")
 PEAK_PARAMS = ("center", "hwhm", "amp", "phase")
 
 
-def chi(x, center, hwhm, hand: int = 1) -> np.ndarray:
-    """The complex Lorentzian susceptibility; hand = -1 is its mirror image."""
-    c = hwhm / (center - np.asarray(x, dtype=float) - 1j * hwhm)
+LINESHAPES = ("lorentzian", "oscillator")
+
+
+def chi(x, center, hwhm, hand: int = 1, lineshape: str = "lorentzian") -> np.ndarray:
+    """The complex susceptibility; hand = -1 is its mirror image. |chi| = 1 and
+    chi = +i on resonance for both lineshapes."""
+    x = np.asarray(x, dtype=float)
+    if lineshape == "oscillator":
+        c = 2 * center * hwhm / (center * center - x * x - 1j * x * 2 * hwhm)
+    else:
+        c = hwhm / (center - x - 1j * hwhm)
     return c if hand >= 0 else np.conj(c)
 
 
@@ -65,6 +101,9 @@ class Setup:
     hand: int = 0                       # +1, -1, or 0 = try both (complex mode)
     xmin: float | None = None           # the fit range; None = the data's end
     xmax: float | None = None
+    lineshape: str = "lorentzian"       # or "oscillator" (exact in frequency)
+    delay: bool = False                 # fit the electrical delay (complex, no dd)
+    dd: int = 0                         # derivative-divide, k points either side; 0 = off
 
 
 @dataclass
@@ -87,17 +126,33 @@ def param_names(setup: Setup) -> list[str]:
     if setup.mode == "complex":
         names += ["bg_re", "bg_im"] + (["slope_re", "slope_im"]
                                        if setup.baseline == "linear" else [])
+        if setup.delay:
+            names.append("delay")
     else:
         names += ["bg"] + (["slope"] if setup.baseline == "linear" else [])
     return names
 
 
-def param_unit(name: str, x_unit: str, y_unit: str) -> str:
+_INVERSE = {"GHz": "ns", "MHz": "us", "kHz": "ms", "Hz": "s"}
+
+
+def param_unit(name: str, x_unit: str, y_unit: str, setup: Setup | None = None) -> str:
     """The unit a parameter is in, for tables and file headers."""
+    inv = _INVERSE.get(x_unit, f"1/{x_unit}" if x_unit else "")
+    dd = setup is not None and setup.dd
     if name.endswith(("_center", "_hwhm", "_fwhm")):
         return x_unit
     if name.endswith("_phase"):
         return "deg"
+    if name == "delay":
+        return inv
+    if dd:
+        # derivative-divide: amplitude relative to the background, the rest 1/x
+        if name.endswith("_amp"):
+            return ""
+        if name.startswith("slope"):
+            return f"1/{x_unit}^2" if x_unit else ""
+        return f"1/{x_unit}" if x_unit else ""
     if name.startswith("slope"):
         return f"{y_unit}/{x_unit}" if (y_unit or x_unit) else ""
     return y_unit                       # amplitude, background
@@ -110,11 +165,39 @@ class Data:
     x: np.ndarray
     y: np.ndarray                       # complex (complex mode) or real
     xc: float                           # centre of the range: the baseline's origin
+    xp: np.ndarray | None = None        # derivative-divide: the neighbours of each x
+    xm: np.ndarray | None = None
+    dd_half: float | None = None        # ... their typical half-distance (for drawing)
+
+
+def reference(x, y, xr, yr, how: str = "divide") -> np.ndarray:
+    """y with a reference sweep taken out: "subtract" (y - ref) or "divide"
+    (y / ref), the reference interpolated onto x (Re and Im separately); NaN
+    where the reference does not reach. Divide for a VNA: the background
+    multiplies the signal (cable loss, delay, mismatch)."""
+    x = np.asarray(x, dtype=float)
+    xr = np.asarray(xr, dtype=float)
+    yr = np.asarray(yr)
+    ok = np.isfinite(xr) & np.isfinite(np.abs(yr))
+    xr, yr = xr[ok], yr[ok]
+    order = np.argsort(xr)
+    xr, yr = xr[order], yr[order]
+    out = np.interp(x, xr, np.real(yr), left=np.nan, right=np.nan)
+    if np.iscomplexobj(yr):
+        out = out + 1j * np.interp(x, xr, np.imag(yr), left=np.nan, right=np.nan)
+    if how == "subtract":
+        return np.asarray(y) - out
+    if how == "divide":
+        with np.errstate(divide="ignore", invalid="ignore"):
+            return np.asarray(y) / out
+    raise ValueError(f"reference: subtract or divide, not '{how}'")
 
 
 def prepare(x, y, setup: Setup) -> Data:
-    """The points that take part: finite, inside the range, sorted by x.
-    NaN-aware: a running or aborted scan has holes, and they are left out."""
+    """The points that take part: finite, sorted by x, derivative-divided if
+    asked (on the whole sweep, so the range does not eat the neighbours),
+    inside the range. NaN-aware: a running or aborted scan has holes, and they
+    are left out."""
     x = np.asarray(x, dtype=float)
     y = np.asarray(y)
     if setup.mode == "complex" and not np.iscomplexobj(y):
@@ -122,31 +205,80 @@ def prepare(x, y, setup: Setup) -> Data:
                          "use 'one channel'")
     if setup.mode == "real" and np.iscomplexobj(y):
         raise ValueError("'one channel' fits real data; pass Re, Im or |z|")
+    if setup.dd and setup.mode != "complex":
+        raise ValueError("derivative-divide needs complex data (Re + Im together)")
     ok = np.isfinite(x) & np.isfinite(np.abs(y))
-    if setup.xmin is not None:
-        ok &= x >= setup.xmin
-    if setup.xmax is not None:
-        ok &= x <= setup.xmax
     x, y = x[ok], y[ok]
     order = np.argsort(x)
     x, y = x[order], y[order]
+    xp = xm = None
+    if setup.dd:
+        k = int(setup.dd)
+        if x.size <= 2 * k + 5:
+            raise ValueError(f"derivative-divide with k = {k} needs more than {2 * k + 5} "
+                             "points")
+        xp, xm = x[2 * k:], x[:-2 * k]
+        with np.errstate(divide="ignore", invalid="ignore"):
+            y = (y[2 * k:] - y[:-2 * k]) / ((xp - xm) * y[k:-k])
+        x = x[k:-k]
+        ok = np.isfinite(np.abs(y))
+        x, y, xp, xm = x[ok], y[ok], xp[ok], xm[ok]
+    sel = np.ones(x.size, dtype=bool)
+    if setup.xmin is not None:
+        sel &= x >= setup.xmin
+    if setup.xmax is not None:
+        sel &= x <= setup.xmax
+    x, y = x[sel], y[sel]
+    if xp is not None:
+        xp, xm = xp[sel], xm[sel]
     n_free = len(param_names(setup)) * (1 if setup.mode == "real" else 0.5)
     if x.size < max(5, n_free + 2):
         raise ValueError(f"only {x.size} measured points in the fit range -- too few")
-    return Data(x=x, y=y, xc=0.5 * (x[0] + x[-1]))
+    return Data(x=x, y=y, xc=0.5 * (x[0] + x[-1]), xp=xp, xm=xm,
+                dd_half=None if xp is None else float(np.median(xp - xm) / 2))
 
 
-def evaluate(values: dict, x, setup: Setup, hand: int, xc: float) -> np.ndarray:
-    """The model at x: complex in complex mode, real (= Re S) in real mode."""
-    x = np.asarray(x, dtype=float)
-    s = np.zeros(x.shape, dtype=complex)
+def displayed(x, y, setup: Setup) -> Data:
+    """What the fit sees over the WHOLE sweep (the range ignored): the data to
+    draw -- derivative-divided when that is on."""
+    return prepare(x, y, Setup(**{**setup.__dict__, "xmin": None, "xmax": None}))
+
+
+def _peaks(values: dict, x, setup: Setup, hand: int) -> np.ndarray:
+    s = np.zeros(np.shape(x), dtype=complex)
     for k in range(1, setup.n_peaks + 1):
         s += (values[f"p{k}_amp"] * np.exp(1j * np.deg2rad(values[f"p{k}_phase"]))
-              * chi(x, values[f"p{k}_center"], values[f"p{k}_hwhm"], hand))
+              * chi(x, values[f"p{k}_center"], values[f"p{k}_hwhm"], hand, setup.lineshape))
+    return s
+
+
+def evaluate(values: dict, x, setup: Setup, hand: int, xc: float, xp=None, xm=None,
+             dd_half: float | None = None) -> np.ndarray:
+    """The model at x: complex in complex mode, real (= Re S) in real mode.
+    Derivative-divide needs each point's neighbours xp, xm -- or, for a smooth
+    line to draw, their typical half-distance dd_half."""
+    x = np.asarray(x, dtype=float)
+    if setup.dd:
+        if xp is None:
+            h = dd_half if dd_half else 1e-6 * max(1.0, float(np.max(np.abs(x))))
+            xp, xm = x + h, x - h
+        pp, pm = 1 + _peaks(values, xp, setup, hand), 1 + _peaks(values, xm, setup, hand)
+        if setup.delay:
+            tau = values["delay"]
+            pp = pp * np.exp(-2j * np.pi * tau * (xp - x))
+            pm = pm * np.exp(-2j * np.pi * tau * (xm - x))
+        s = (pp - pm) / ((xp - xm) * (1 + _peaks(values, x, setup, hand)))
+        s = s + values["bg_re"] + 1j * values["bg_im"]
+        if setup.baseline == "linear":
+            s = s + (values["slope_re"] + 1j * values["slope_im"]) * (x - xc)
+        return s
+    s = _peaks(values, x, setup, hand)
     if setup.mode == "complex":
         s += values["bg_re"] + 1j * values["bg_im"]
         if setup.baseline == "linear":
             s += (values["slope_re"] + 1j * values["slope_im"]) * (x - xc)
+        if setup.delay:
+            s = s * np.exp(-2j * np.pi * values["delay"] * (x - xc))
         return s
     out = s.real + values["bg"]
     if setup.baseline == "linear":
@@ -207,14 +339,28 @@ def guess(x, y, setup: Setup, hand: int = 1,
     they are -- adding a second peak must not throw away a tuned first one.
     """
     d = prepare(x, y, setup)
+    if setup.dd and setup.delay:
+        return _guess_dd_from_raw(x, y, setup, hand, keep)
+    if setup.dd:
+        return _guess_dd(d, setup, hand, keep)
     n = d.x.size
     m = max(3, n // 10)
     edge = np.r_[np.arange(m), np.arange(n - m, n)]
+    specs: dict[str, Spec] = {}
+    yw = d.y
+    if setup.mode == "complex" and setup.delay:
+        # the delay winds the phase linearly with x: its slope at the two ends
+        if keep and "delay" in keep:
+            tau = keep["delay"].value
+            specs["delay"] = keep["delay"]
+        else:
+            tau = _delay_from_phase(d)
+            specs["delay"] = Spec(float(tau))
+        yw = d.y * np.exp(2j * np.pi * tau * (d.x - d.xc))
     cols = [np.ones(n)] + ([d.x - d.xc] if setup.baseline == "linear" else [])
     A = np.stack(cols, axis=1)
-    coef, *_ = np.linalg.lstsq(A[edge], d.y[edge], rcond=None)
+    coef, *_ = np.linalg.lstsq(A[edge], yw[edge], rcond=None)
     bg = A @ coef
-    specs: dict[str, Spec] = {}
     if setup.mode == "complex":
         specs["bg_re"], specs["bg_im"] = Spec(float(coef[0].real)), Spec(float(coef[0].imag))
         if setup.baseline == "linear":
@@ -225,7 +371,7 @@ def guess(x, y, setup: Setup, hand: int = 1,
         if setup.baseline == "linear":
             specs["slope"] = Spec(float(coef[1].real))
 
-    r = d.y - bg
+    r = yw - bg
     z = r if setup.mode == "complex" else _analytic(r)
     span = d.x[-1] - d.x[0]
     for k in range(1, setup.n_peaks + 1):
@@ -245,7 +391,90 @@ def guess(x, y, setup: Setup, hand: int = 1,
             specs[f"p{k}_phase"] = Spec(vals["phase"])
         # the next peak is looked for in what this one leaves
         z = z - vals["amp"] * np.exp(1j * np.deg2rad(vals["phase"])) * chi(
-            d.x, vals["center"], vals["hwhm"], hand)
+            d.x, vals["center"], vals["hwhm"], hand, setup.lineshape)
+    return specs
+
+
+def _delay_from_phase(d: Data) -> float:
+    """tau from the phase slope at the two ends of the range (1/x units)."""
+    n = d.x.size
+    m = max(3, n // 10)
+    edge = np.r_[np.arange(m), np.arange(n - m, n)]
+    ph = np.unwrap(np.angle(d.y))
+    return float(-np.polyfit(d.x[edge] - d.xc, ph[edge], 1)[0] / (2 * np.pi))
+
+
+def _guess_dd_from_raw(x, y, setup: Setup, hand: int, keep) -> dict[str, Spec]:
+    """Start values for derivative-divide WITH the delay, from the raw sweep:
+    the delay unwound there (phase slope), the peak guessed relative to the
+    background there. In D itself the peaks are rotated by e^{-+i 2pi tau h},
+    2 rad for 3.2 ns and 100 MHz steps, and integrating D back gives nothing
+    useful to guess from (tried first, 2026-09-29)."""
+    raw = Setup(**{**setup.__dict__, "dd": 0, "delay": True, "baseline": "linear"})
+    g = guess(x, y, raw, hand=hand, keep=keep)
+    c = g["bg_re"].value + 1j * g["bg_im"].value
+    c = c if abs(c) > 0 else 1.0
+    s1 = g["slope_re"].value + 1j * g["slope_im"].value
+    lnb = s1 / c                              # what is left of d ln B / dx
+    specs = {"bg_re": Spec(float(lnb.real)), "bg_im": Spec(float(lnb.imag)),
+             "delay": g["delay"]}
+    if setup.baseline == "linear":
+        specs["slope_re"], specs["slope_im"] = Spec(0.0), Spec(0.0)
+    for k in range(1, setup.n_peaks + 1):
+        names = peak_names(k)
+        if keep and all(nm in keep for nm in names):
+            specs.update({nm: keep[nm] for nm in names})
+            continue
+        specs[f"p{k}_center"], specs[f"p{k}_hwhm"] = g[f"p{k}_center"], g[f"p{k}_hwhm"]
+        specs[f"p{k}_amp"] = Spec(g[f"p{k}_amp"].value / abs(c), min=0.0)
+        specs[f"p{k}_phase"] = Spec(_wrap(g[f"p{k}_phase"].value - np.rad2deg(np.angle(c))))
+    return specs
+
+
+def _guess_dd(d: Data, setup: Setup, hand: int, keep, tau=None) -> dict[str, Spec]:
+    """Start values for derivative-divided data: D is d ln S / dx, so its
+    integral gives S back up to a constant (the background, if it varies
+    slowly). Guess on that, then make the amplitude relative and the phase
+    relative to the background. The delay's part of D, known exactly for a
+    given tau, is taken out first."""
+    y = d.y
+    if tau is not None:
+        y = y - ((np.exp(-2j * np.pi * tau * (d.xp - d.x))
+                  - np.exp(-2j * np.pi * tau * (d.xm - d.x))) / (d.xp - d.xm))
+        d = Data(x=d.x, y=y, xc=d.xc, xp=d.xp, xm=d.xm, dd_half=d.dd_half)
+    # The background's own d ln B / dx first, from the ends of the range: for a
+    # VNA it is dominated by the delay, -i 2 pi tau (-20i per GHz for 3.2 ns),
+    # far larger than the resonance. Integrated along, it would wind the phase
+    # back up and hide the peak from the guess (it did, 2026-09-29).
+    n = d.x.size
+    m = max(3, n // 10)
+    edge = np.r_[np.arange(m), np.arange(n - m, n)]
+    cols = [np.ones(n)] + ([d.x - d.xc] if setup.baseline == "linear" else [])
+    A = np.stack(cols, axis=1)
+    coef, *_ = np.linalg.lstsq(A[edge], d.y[edge], rcond=None)
+    rest = d.y - A @ coef
+    step = np.diff(d.x)
+    L = np.concatenate([[0.0], np.cumsum(0.5 * (rest[1:] + rest[:-1]) * step)])
+    s = np.exp(L)
+    plain = Setup(**{**setup.__dict__, "dd": 0, "delay": False, "baseline": "linear",
+                     "xmin": None, "xmax": None})
+    g = guess(d.x, s, plain, hand=hand, keep=keep)
+    c = g["bg_re"].value + 1j * g["bg_im"].value
+    specs = {"bg_re": Spec(float(coef[0].real)), "bg_im": Spec(float(coef[0].imag))}
+    if setup.baseline == "linear":
+        specs["slope_re"] = Spec(float(coef[1].real))
+        specs["slope_im"] = Spec(float(coef[1].imag))
+    for k in range(1, setup.n_peaks + 1):
+        names = peak_names(k)
+        if keep and all(nm in keep for nm in names):
+            specs.update({nm: keep[nm] for nm in names})
+            continue
+        specs[f"p{k}_center"], specs[f"p{k}_hwhm"] = g[f"p{k}_center"], g[f"p{k}_hwhm"]
+        amp = g[f"p{k}_amp"].value / max(abs(c), 1e-300)
+        specs[f"p{k}_amp"] = Spec(amp, min=0.0)
+        specs[f"p{k}_phase"] = Spec(_wrap(g[f"p{k}_phase"].value - np.rad2deg(np.angle(c))))
+    if tau is not None:
+        specs["delay"] = Spec(float(tau))
     return specs
 
 
@@ -266,9 +495,10 @@ class Result:
     success: bool
     message: str
     xrange: tuple[float, float]
+    dd_half: float | None = None
 
     def evaluate(self, x) -> np.ndarray:
-        return evaluate(self.values, x, self.setup, self.hand, self.xc)
+        return evaluate(self.values, x, self.setup, self.hand, self.xc, dd_half=self.dd_half)
 
     def fwhm(self, k: int) -> tuple[float, float | None]:
         e = self.errors.get(f"p{k}_hwhm")
@@ -288,7 +518,7 @@ def _run(d: Data, setup: Setup, hand: int, start: dict[str, Spec]) -> Result:
         params.add(name, value=v, vary=sp.vary, min=sp.min, max=sp.max)
 
     def resid(p):
-        diff = evaluate(p.valuesdict(), d.x, setup, hand, d.xc) - d.y
+        diff = evaluate(p.valuesdict(), d.x, setup, hand, d.xc, d.xp, d.xm) - d.y
         return np.concatenate([diff.real, diff.imag]) if setup.mode == "complex" else diff
 
     out = lmfit.minimize(resid, params, method="leastsq")
@@ -303,7 +533,7 @@ def _run(d: Data, setup: Setup, hand: int, start: dict[str, Spec]) -> Result:
                   chisqr=float(out.chisqr), redchi=float(out.redchi),
                   ndata=int(out.ndata), nvarys=int(out.nvarys),
                   success=bool(out.success), message=str(out.message),
-                  xrange=(float(d.x[0]), float(d.x[-1])))
+                  xrange=(float(d.x[0]), float(d.x[-1])), dd_half=d.dd_half)
 
 
 def fit(x, y, setup: Setup, start: dict[str, Spec] | None = None) -> Result:
@@ -319,7 +549,7 @@ def fit(x, y, setup: Setup, start: dict[str, Spec] | None = None) -> Result:
     if setup.mode == "complex":
         for h in ([setup.hand] if setup.hand else [1, -1]):
             if not start:
-                runs.append(_run(d, setup, h, guess(d.x, d.y, setup, hand=h)))
+                runs.append(_run(d, setup, h, guess(x, y, setup, hand=h)))
                 continue
             runs.append(_run(d, setup, h, start))
             if not setup.hand:
@@ -330,8 +560,8 @@ def fit(x, y, setup: Setup, start: dict[str, Spec] | None = None) -> Result:
     else:
         starts = [start] if start else []
         if not start:
-            starts.append(guess(d.x, d.y, setup, hand=1))
-            mirror = guess(d.x, d.y, setup, hand=-1)
+            starts.append(guess(x, y, setup, hand=1))
+            mirror = guess(x, y, setup, hand=-1)
             # Re(A e^{i phi} conj(chi)) = Re(A e^{-i phi} chi): same model, phase negated
             for k in range(1, setup.n_peaks + 1):
                 sp = mirror[f"p{k}_phase"]
@@ -395,7 +625,7 @@ def residuals(res: Result, x, y) -> tuple[np.ndarray, np.ndarray]:
     """Data minus model inside the fit range: (x, residual) -- complex in complex mode."""
     d = prepare(x, y, Setup(**{**res.setup.__dict__, "xmin": res.xrange[0],
                                "xmax": res.xrange[1]}))
-    return d.x, d.y - res.evaluate(d.x)
+    return d.x, d.y - evaluate(res.values, d.x, res.setup, res.hand, res.xc, d.xp, d.xm)
 
 
 # ──────────────────────────────── the results ─────────────────────────────────
@@ -447,7 +677,7 @@ def results_table(rows: list) -> list[Column]:
                 else:
                     v, e = r.values[f"p{k}_{p}"], r.errors.get(f"p{k}_{p}")
                 vals.append(v); errs.append(np.nan if e is None else e)
-            unit = param_unit(f"p{k}_{p}", x_unit, y_unit)
+            unit = param_unit(f"p{k}_{p}", x_unit, y_unit, rows[0][1].setup)
             cols.append(Column(f"p{k}_{p}", unit, f"peak {k}: {label}", vals))
             cols.append(Column(f"p{k}_{p}_err", unit, f"peak {k}: {label}, 1 sigma", errs,
                                kind="E"))
@@ -494,17 +724,19 @@ def figure_fit(curve, res: Result, y, size=(6.4, 5.6)):
     xx = np.linspace(res.xrange[0], res.xrange[1], 800)
     model = res.evaluate(xx)
     rx, rr = residuals(res, curve.x, y)
+    shown = displayed(curve.x, y, res.setup)        # derivative-divided when that is on
     if res.setup.mode == "complex":
         for part, fn, col in (("Re", np.real, "#1f77b4"), ("Im", np.imag, "#d62728")):
-            ax.plot(curve.x, fn(y), "o", ms=2.5, color=col, alpha=0.6, label=f"{part} data")
+            ax.plot(shown.x, fn(shown.y), "o", ms=2.5, color=col, alpha=0.6,
+                    label=f"{part} data")
             ax.plot(xx, fn(model), "-", color=col, lw=1.5, label=f"{part} fit")
             axr.plot(rx, fn(rr), "o", ms=2, color=col)
     else:
-        ax.plot(curve.x, y, "o", ms=2.5, color="#1f77b4", alpha=0.6, label="data")
+        ax.plot(shown.x, shown.y, "o", ms=2.5, color="#1f77b4", alpha=0.6, label="data")
         ax.plot(xx, model, "-", color="#d62728", lw=1.5, label="fit")
         axr.plot(rx, rr, "o", ms=2, color="#1f77b4")
     axr.axhline(0, color="0.5", lw=0.8)
-    ax.set_ylabel(axis_title(curve.y_name if res.setup.mode == "real" else "S", curve.y_unit))
+    ax.set_ylabel(y_title(curve, res.setup))
     axr.set_ylabel("residual")
     axr.set_xlabel(axis_title(curve.x_name, curve.x_unit))
     ax.tick_params(labelbottom=False)
@@ -516,6 +748,14 @@ def figure_fit(curve, res: Result, y, size=(6.4, 5.6)):
         bits.append(f"x0 = {fmt_pm(c, ce)}, FWHM = {fmt_pm(w, we)} {curve.x_unit}")
     ax.set_title(curve.label + "\n" + "; ".join(bits), fontsize=9)
     return fig
+
+
+def y_title(curve, setup: Setup) -> str:
+    """The y axis: the channel, S, or the derivative-divided d ln S / dx."""
+    from aaltoview.export import axis_title
+    if setup.dd:
+        return axis_title("∂_D S = ΔS / (Δx S)", f"1/{curve.x_unit}" if curve.x_unit else "")
+    return axis_title(curve.y_name if setup.mode == "real" else "S", curve.y_unit)
 
 
 def fmt_pm(v: float, e: float | None) -> str:

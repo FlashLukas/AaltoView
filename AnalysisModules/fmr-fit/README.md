@@ -50,6 +50,30 @@ phase. On *auto*, both are tried and the better one is kept.
    them as `.csv`/`.dat`, or send them to Origin (error columns are set as
    error bars). **Save image** saves data, fit and residuals.
 
+## Frequency sweeps (VNA): options
+
+A VNA frequency sweep is harder to fit than a field sweep. The line is not
+quite a Lorentzian in f, and the cables add a background that changes with
+frequency. The **FREQUENCY SWEEPS** box has four options; you can combine
+them and they apply to Fit all too.
+
+| Option | What it does | Use it when |
+|---|---|---|
+| **lineshape: oscillator** | χ = 2f₀Δ/(f₀² − f² − i·f·2Δ), the damped oscillator, exact in f. It has the same x0 and HWHM Δ as the Lorentzian, which is its limit near resonance. | Broad lines at low frequency: the Lorentzian is off by about Δ/f₀. Not for field sweeps. |
+| **electrical delay τ** | Multiplies the whole signal by e^{−i2πτ(f − fc)}. The start value comes from the phase slope. τ is in ns for GHz. | Always for an uncalibrated VNA: 3 ns turns the phase once every 0.33 GHz. |
+| **derivative-divide, step k** | Fits D = (S(f₊) − S(f₋)) / ((f₊ − f₋)·S(f)) (Maier-Flaig et al., Rev. Sci. Instrum. 89, 076101 (2018)). A background that multiplies the signal and varies slowly drops out. The model goes through the same finite difference exactly, and with the delay option it is exact for the delay too. The amplitude becomes relative. | A smooth background. Choose k so the step is about the linewidth, because the noise is divided by the step. |
+| **reference: divide / subtract** | Takes another received curve out before the fit, interpolated onto this curve's axis: e.g. a sweep at a field where nothing resonates in the band. | Standing-wave ripple and anything else that doesn't change with field. Record it on the same frequency grid. |
+
+On the simulated VNA sweeps (`tools/make_demo_data.py`, file 7: 3.2 ns delay,
+2 % ripple, sloped loss, oscillator lineshape):
+- **reference divide + oscillator** gives f₀ and the width within their error
+  bars;
+- **plain Lorentzian** fails completely;
+- **delay alone** can't remove the ripple;
+- **derivative-divide** is exact on a smooth background, but a ripple as large
+  as the resonance survives the differencing. It scatters by about 0.5 % in
+  f₀ and 20 % in the width.
+
 ## Dispersion: from resonances to material parameters
 
 ![the Dispersion tab on the simulated anisotropic film](../../docs/fmr-dispersion.png)

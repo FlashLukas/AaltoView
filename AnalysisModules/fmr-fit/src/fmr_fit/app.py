@@ -50,9 +50,20 @@ class Entry:
     result: M.Result | None = None
     own_range: bool = False             # the operator dragged this curve's band
     located: tuple | None = None        # (key, (x0, hwhm)): M.locate is a fit, done once
+    reference: tuple | None = None      # (Entry, "divide" | "subtract"): taken out first
 
     def y(self) -> np.ndarray:
-        return self.curve.z if self.setup.mode == "complex" else self.curve.y
+        """What is fitted: the complex values or the shown channel, with the
+        reference sweep divided or subtracted out when one is chosen."""
+        complex_ = self.setup.mode == "complex"
+        y = self.curve.z if complex_ else self.curve.y
+        if self.reference is None:
+            return y
+        ref, how = self.reference
+        if complex_ and ref.curve.z is None:
+            raise ValueError(f"the reference '{ref.curve.label}' has no complex data")
+        yr = ref.curve.z if complex_ else ref.curve.y
+        return M.reference(self.curve.x, y, ref.curve.x, yr, how)
 
 
 def _pretty(name: str) -> str:
@@ -61,7 +72,8 @@ def _pretty(name: str) -> str:
         k, p = name[1:].split("_", 1)
         return f"peak {k}: {PARAM_TEXT.get(p, p)}"
     return {"bg": "background", "bg_re": "background Re", "bg_im": "background Im",
-            "slope": "slope", "slope_re": "slope Re", "slope_im": "slope Im"}.get(name, name)
+            "slope": "slope", "slope_re": "slope Re", "slope_im": "slope Im",
+            "delay": "electrical delay τ"}.get(name, name)
 
 
 class FitWindow(QtWidgets.QWidget):
@@ -142,6 +154,55 @@ class FitWindow(QtWidgets.QWidget):
         self.hand.currentIndexChanged.connect(self._model_changed)
         grid.addWidget(self.hand, 1, 3)
         lv.addLayout(grid)
+
+        # ── options for frequency sweeps (a VNA is harder to fit in f) ────
+        lv.addWidget(self._tag("FREQUENCY SWEEPS  (options; see the tooltips)"))
+        og = QtWidgets.QGridLayout()
+        og.addWidget(QtWidgets.QLabel("lineshape"), 0, 0)
+        self.lineshape = QtWidgets.QComboBox()
+        self.lineshape.addItem("Lorentzian", "lorentzian")
+        self.lineshape.addItem("oscillator (exact in f)", "oscillator")
+        self.lineshape.setToolTip(
+            "Oscillator: 2 f0 Δ / (f0² − f² − i f 2Δ), the damped oscillator, exact for a\n"
+            "FREQUENCY sweep. The Lorentzian is its limit near resonance: off by ~ Δ/f0\n"
+            "(a few % for a broad line at low frequency). Same x0 and HWHM Δ.\n"
+            "For field sweeps keep the Lorentzian.")
+        self.lineshape.currentIndexChanged.connect(self._model_changed)
+        og.addWidget(self.lineshape, 0, 1)
+        self.delay = QtWidgets.QCheckBox("electrical delay τ")
+        self.delay.setToolTip(
+            "Fit the cable's delay: the signal times e^(−i2π τ (f − fc)), the phase that\n"
+            "winds with frequency (3 ns = a full turn every 0.33 GHz). τ in ns for GHz.\n"
+            "Use it WITH derivative-divide too: then the model is exact for the delay.")
+        self.delay.toggled.connect(self._model_changed)
+        og.addWidget(self.delay, 0, 2, 1, 2)
+        self.dd = QtWidgets.QCheckBox("derivative-divide, step k")
+        self.dd.setToolTip(
+            "Fit D = (S(f+) − S(f−)) / ((f+ − f−) S(f)), f± = k points either side\n"
+            "(Maier-Flaig et al. 2018): a background that MULTIPLIES the signal and\n"
+            "varies slowly drops out; the model is transformed exactly the same way,\n"
+            "so k costs no accuracy -- choose it about as wide as the line (noise is\n"
+            "divided by the step). The amplitude becomes relative to the background.\n"
+            "Does NOT remove a standing-wave ripple as large as the resonance: use a\n"
+            "reference for that.")
+        self.dd.toggled.connect(self._model_changed)
+        og.addWidget(self.dd, 1, 0, 1, 2)
+        self.dd_k = QtWidgets.QSpinBox(); self.dd_k.setRange(1, 200); self.dd_k.setValue(5)
+        self.dd_k.valueChanged.connect(self._model_changed)
+        og.addWidget(self.dd_k, 1, 2)
+        og.addWidget(QtWidgets.QLabel("reference"), 2, 0)
+        self.ref_combo = QtWidgets.QComboBox()
+        self.ref_combo.setToolTip(
+            "Another received curve -- a sweep where nothing resonates in the band\n"
+            "(e.g. at a high field) -- taken out BEFORE fitting: divide for a VNA (the\n"
+            "background multiplies), subtract for an additive one. Interpolated onto\n"
+            "this curve's axis: record it on the same frequency grid if the phase winds fast.")
+        self.ref_combo.currentIndexChanged.connect(self._model_changed)
+        og.addWidget(self.ref_combo, 2, 1)
+        self.ref_how = QtWidgets.QComboBox(); self.ref_how.addItems(["divide", "subtract"])
+        self.ref_how.currentIndexChanged.connect(self._model_changed)
+        og.addWidget(self.ref_how, 2, 2)
+        lv.addLayout(og)
         self.formula = QtWidgets.QLabel(
             "S = Σ A·e^{iφ}·Δ/(x0 − x − iΔ) + b0 + b1·(x − xc)     Δ = HWHM, FWHM = 2Δ")
         self.formula.setStyleSheet(f"color:{C['muted']}; font-size:11px;")
@@ -270,7 +331,8 @@ class FitWindow(QtWidgets.QWidget):
 
     def _set_enabled(self, on: bool):
         for w in (self.guess_btn, self.fit_btn, self.fit_all_btn, self.full_btn, self.table,
-                  self.peaks, self.mode, self.baseline, self.hand):
+                  self.peaks, self.mode, self.baseline, self.hand, self.lineshape, self.delay,
+                  self.dd, self.dd_k, self.ref_combo, self.ref_how):
             w.setEnabled(on)
 
     # ── curves in ──────────────────────────────────────────────────────────
@@ -309,7 +371,10 @@ class FitWindow(QtWidgets.QWidget):
                       for it in self.curve_list.selectedItems()}, reverse=True)
         for i in idx:
             self.curve_list.takeTopLevelItem(i)
-            del self.entries[i]
+            gone = self.entries.pop(i)
+            for other in self.entries:
+                if other.reference and other.reference[0] is gone:
+                    other.reference, other.result, other.start = None, None, None
         self._curve_changed()
         self._fill_results()
 
@@ -333,9 +398,15 @@ class FitWindow(QtWidgets.QWidget):
             self.mode.setCurrentIndex(self.mode.findData(e.setup.mode))
             self.baseline.setCurrentText(e.setup.baseline)
             self.hand.setCurrentIndex(self.hand.findData(e.setup.hand))
+            self.lineshape.setCurrentIndex(self.lineshape.findData(e.setup.lineshape))
+            self.delay.setChecked(e.setup.delay)
+            self.dd.setChecked(bool(e.setup.dd))
+            if e.setup.dd:
+                self.dd_k.setValue(e.setup.dd)
+            self._fill_ref_combo(e)
             # complex needs complex data
             self.mode.model().item(0).setEnabled(e.curve.z is not None)
-            self.hand.setEnabled(e.setup.mode == "complex")
+            self._complex_only(e.setup.mode == "complex")
         finally:
             self._filling = False
         before = (e.setup.xmin, e.setup.xmax)
@@ -350,18 +421,57 @@ class FitWindow(QtWidgets.QWidget):
             self.say(note)
 
     def _setup_from_controls(self, e: Entry) -> M.Setup:
+        complex_ = self.mode.currentData() == "complex"
         return M.Setup(n_peaks=self.peaks.value(), mode=self.mode.currentData(),
                        baseline=self.baseline.currentText(), hand=self.hand.currentData(),
-                       xmin=e.setup.xmin, xmax=e.setup.xmax)
+                       xmin=e.setup.xmin, xmax=e.setup.xmax,
+                       lineshape=self.lineshape.currentData(),
+                       delay=complex_ and self.delay.isChecked(),
+                       dd=self.dd_k.value() if (complex_ and self.dd.isChecked()) else 0)
+
+    def _complex_only(self, on: bool):
+        """Hand, delay and derivative-divide need both quadratures."""
+        for w in (self.hand, self.delay, self.dd, self.dd_k):
+            w.setEnabled(on)
+
+    def _fill_ref_combo(self, e: Entry):
+        """none + every OTHER curve; the current choice kept."""
+        self.ref_combo.blockSignals(True)
+        self.ref_combo.clear()
+        self.ref_combo.addItem("none", None)
+        for other in self.entries:
+            if other is not e:
+                self.ref_combo.addItem(other.curve.label, id(other))
+        i = self.ref_combo.findData(id(e.reference[0])) if e.reference else 0
+        self.ref_combo.setCurrentIndex(max(i, 0))
+        if e.reference:
+            self.ref_how.setCurrentText(e.reference[1])
+        self.ref_combo.blockSignals(False)
+
+    def _reference_from_controls(self, e: Entry):
+        rid = self.ref_combo.currentData()
+        ref = next((o for o in self.entries if id(o) == rid), None)
+        return (ref, self.ref_how.currentText()) if ref is not None else None
 
     def _model_changed(self, *_):
         e = self.current()
         if self._filling or e is None:
             return
+        old, old_ref = e.setup, e.reference
         e.setup = self._setup_from_controls(e)
-        self.hand.setEnabled(e.setup.mode == "complex")
+        e.reference = self._reference_from_controls(e)
+        e.located = None                        # the data may have changed
+        self._complex_only(e.setup.mode == "complex")
         e.result = None
-        self._guess(e, keep=e.start)            # keeps the peaks already tuned
+        # Keep the peaks already tuned -- unless what the amplitude and phase MEAN
+        # changed: derivative-divide makes them relative, a delay or a reference
+        # changes the background they are measured against. Kept across such a
+        # change they were a wrong start (7.40 GHz instead of 7.06, 2026-09-29).
+        same = (all(getattr(old, k) == getattr(e.setup, k)
+                    for k in ("mode", "lineshape", "delay", "dd"))
+                and old_ref == e.reference)
+        keep = {k: v for k, v in (e.start or {}).items() if k.startswith("p")} if same else {}
+        self._guess(e, keep=keep or None)
         self._fill_table()
         self._redraw()
 
@@ -482,7 +592,7 @@ class FitWindow(QtWidgets.QWidget):
                 err = res.errors.get(name) if res else None
                 cells = [_pretty(name), f"{val:.6g}",
                          "" if err is None else f"{err:.2g}",
-                         M.param_unit(name, e.curve.x_unit, e.curve.y_unit), "",
+                         M.param_unit(name, e.curve.x_unit, e.curve.y_unit, e.setup), "",
                          "" if not np.isfinite(sp.min) else f"{sp.min:.6g}",
                          "" if not np.isfinite(sp.max) else f"{sp.max:.6g}"]
                 for c, text in enumerate(cells):
@@ -554,9 +664,13 @@ class FitWindow(QtWidgets.QWidget):
         if cur is None:
             return
         template = self._setup_from_controls(cur)
+        ref = self._reference_from_controls(cur)
         bad = []
-        targets = self.targets()
+        # the reference sweep is not fitted with itself taken out of it
+        targets = [e for e in self.targets() if ref is None or e is not ref[0]]
         for e in targets:
+            e.reference = ref
+            e.located = None
             mode = template.mode if (template.mode == "real" or e.curve.z is not None) else "real"
             # the model is shared, the RANGE is not: each curve keeps its own band
             # or gets the carried one around its own peak (never cur's field values)
@@ -610,12 +724,19 @@ class FitWindow(QtWidgets.QWidget):
         e = self.current()
         if e is None:
             return
-        c, y = e.curve, e.y()
+        c = e.curve
+        try:
+            y = e.y()
+            # what the fit sees: derivative-divided, reference taken out
+            shown = M.displayed(c.x, y, e.setup)
+        except Exception as exc:
+            self.say(str(exc), error=True)
+            return
         parts = ([("Re", np.real, TAB10[0]), ("Im", np.imag, TAB10[3])]
                  if e.setup.mode == "complex" else [(c.y_name, np.real, TAB10[0])])
         for name, fn, col in parts:
             self._add(self.plot, pg.PlotDataItem(
-                c.x, fn(y), pen=None, symbol="o", symbolSize=4, symbolPen=None,
+                shown.x, fn(shown.y), pen=None, symbol="o", symbolSize=4, symbolPen=None,
                 symbolBrush=pg.mkBrush(QtGui.QColor(col)), name=f"{name} data"))
         model_vals = None
         xs = None
@@ -635,7 +756,8 @@ class FitWindow(QtWidgets.QWidget):
                 d = M.prepare(c.x, y, e.setup)
                 xs = np.linspace(d.x[0], d.x[-1], 800)
                 model_vals = M.evaluate({n: s.value for n, s in e.start.items()}, xs,
-                                        e.setup, e.setup.hand or 1, d.xc)
+                                        e.setup, e.setup.hand or 1, d.xc,
+                                        dd_half=d.dd_half)
                 label = "start"
             except Exception:
                 model_vals = None
@@ -647,8 +769,7 @@ class FitWindow(QtWidgets.QWidget):
                                                      width=2, style=style),
                     name=f"{name} {label}"))
         self.plot.setLabel("bottom", axis_title(c.x_name, c.x_unit))
-        self.plot.setLabel("left", axis_title("S" if e.setup.mode == "complex" else c.y_name,
-                                              c.y_unit))
+        self.plot.setLabel("left", M.y_title(c, e.setup))
         self.rplot.setLabel("bottom", axis_title(c.x_name, c.x_unit))
 
     def _add(self, plot, item):
