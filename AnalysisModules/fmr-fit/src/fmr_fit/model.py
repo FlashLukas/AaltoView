@@ -303,17 +303,20 @@ def _analytic(r: np.ndarray) -> np.ndarray:
     return hilbert(r - np.mean(r))
 
 
-def _guess_peak(x, z, hand: int) -> dict[str, float]:
-    """Largest bump of |z|: its position, its width at 1/sqrt(2) of the top
-    (|chi| = 1/sqrt(2) at x0 +- dx), its height and its phase."""
+def _guess_peak(x, z, hand: int, allowed=None, bounds=None) -> dict[str, float]:
+    """Largest bump of |z| (where `allowed`): its position, its width at
+    1/sqrt(2) of the top (|chi| = 1/sqrt(2) at x0 +- dx, measured within
+    `bounds` = (first, last) index), its height and phase."""
     mag = _smooth(np.abs(z))
-    i = int(np.argmax(mag))
+    search = mag if allowed is None else np.where(allowed, mag, -np.inf)
+    i = int(np.argmax(search))
     top = mag[i]
+    first, last = bounds if bounds is not None else (0, x.size - 1)
     lo = i
-    while lo > 0 and mag[lo] > top / np.sqrt(2):
+    while lo > first and mag[lo] > top / np.sqrt(2):
         lo -= 1
     hi = i
-    while hi < x.size - 1 and mag[hi] > top / np.sqrt(2):
+    while hi < last and mag[hi] > top / np.sqrt(2):
         hi += 1
     step = np.median(np.diff(x)) if x.size > 1 else 1.0
     w = max(0.5 * (x[hi] - x[lo]), step)
@@ -321,6 +324,40 @@ def _guess_peak(x, z, hand: int) -> dict[str, float]:
     phase = np.rad2deg(np.angle(z[i]) - hand * np.pi / 2)
     return {"center": float(x[i]), "hwhm": float(w), "amp": float(top),
             "phase": float(_wrap(phase))}
+
+
+def _robust_background(A: np.ndarray, y: np.ndarray, edge: np.ndarray) -> np.ndarray:
+    """Background coefficients: from the ends of the range first, then refitted
+    on every point that does not stand out (|residual| < 3 median deviations),
+    a few times. The ends alone fail when a resonance sits there: a 16 GHz YIG
+    sweep has its two strongest lines in the top 10 % of the field range, the
+    tilted "background" made a false peak and the weakest mode was lost."""
+    coef, *_ = np.linalg.lstsq(A[edge], y[edge], rcond=None)
+    for _ in range(5):
+        r = np.abs(y - A @ coef)
+        mad = np.median(r)
+        keep = r < 3 * mad if mad > 0 else np.ones(y.size, dtype=bool)
+        if keep.sum() < max(10, 2 * A.shape[1]):
+            break
+        new, *_ = np.linalg.lstsq(A[keep], y[keep], rcond=None)
+        if np.allclose(new, coef, rtol=1e-6, atol=1e-12 * (np.abs(coef).max() + 1)):
+            break
+        coef = new
+    return coef
+
+
+def _candidates(x, z) -> list[int]:
+    """Indices of local maxima of the smoothed |z|, most prominent first,
+    keeping only those that stand out of the noise (5 x its point-to-point
+    scatter)."""
+    from scipy.signal import find_peaks
+    mag = _smooth(np.abs(z))
+    if mag.size < 5:
+        return []
+    noise = 1.4826 * np.median(np.abs(np.diff(np.abs(z)))) / np.sqrt(2)
+    idx, props = find_peaks(mag, prominence=max(5 * noise, 1e-300))
+    order = np.argsort(props["prominences"])[::-1]
+    return [int(i) for i in idx[order]]
 
 
 def _wrap(deg: float) -> float:
@@ -359,7 +396,7 @@ def guess(x, y, setup: Setup, hand: int = 1,
         yw = d.y * np.exp(2j * np.pi * tau * (d.x - d.xc))
     cols = [np.ones(n)] + ([d.x - d.xc] if setup.baseline == "linear" else [])
     A = np.stack(cols, axis=1)
-    coef, *_ = np.linalg.lstsq(A[edge], yw[edge], rcond=None)
+    coef = _robust_background(A, yw, edge)
     bg = A @ coef
     if setup.mode == "complex":
         specs["bg_re"], specs["bg_im"] = Spec(float(coef[0].real)), Spec(float(coef[0].imag))
@@ -374,13 +411,59 @@ def guess(x, y, setup: Setup, hand: int = 1,
     r = yw - bg
     z = r if setup.mode == "complex" else _analytic(r)
     span = d.x[-1] - d.x[0]
+    # a peak found is not looked for again within a few widths of it: with
+    # narrow lines (YIG, ~9 points) the first estimate is not exact, what it
+    # leaves behind is still the biggest bump, and all five "peaks" of a YIG
+    # sweep landed within 0.5 mT of the uniform mode (2026-09-29)
+    allowed = np.ones(d.x.size, dtype=bool)
+    # Candidates: local maxima of |z| ranked by PROMINENCE. The tails of a line
+    # have no local maxima, so what the strong line leaves behind is never
+    # taken for a weak mode (a 0.3 uV PSSW next to a 10 uV uniform line was
+    # missed that way); noise has little prominence. Taken in order, then the
+    # residual search below when they run out.
+    cands = _candidates(d.x, z)[: setup.n_peaks]
+    cand_pos = list(cands)
+    w_first = None
+    for k in range(1, setup.n_peaks + 1):          # kept peaks: their lines are taken
+        if keep and all(nm in keep for nm in peak_names(k)):
+            c0, w0 = keep[f"p{k}_center"].value, keep[f"p{k}_hwhm"].value
+            allowed &= np.abs(d.x - c0) > 4 * max(w0, 1e-12)
     for k in range(1, setup.n_peaks + 1):
         names = peak_names(k)
         if keep and all(nm in keep for nm in names):
             vals = {p: keep[f"p{k}_{p}"].value for p in PEAK_PARAMS}
             specs.update({nm: keep[nm] for nm in names})
         else:
-            vals = _guess_peak(d.x, z, hand)
+            if not allowed.any():
+                allowed[:] = True
+            # not a line already taken -- by a peak found, or KEPT: going from 1
+            # to 5 peaks kept peak 1 on the uniform line, and peak 2 was put on
+            # the same line again (YIG screenshot, 2026-09-29)
+            while cands and not allowed[cands[0]]:
+                cands.pop(0)
+            if cands:
+                # a candidate is its own local maximum: used as it is, its width
+                # measured no further than halfway to the neighbouring ones (a
+                # weak line's half-height walk ran on through the noise, and the
+                # zone around it hid the next mode)
+                i = cands.pop(0)
+                only = np.zeros(d.x.size, dtype=bool)
+                only[i] = True
+                left = max([j for j in cand_pos if j < i], default=None)
+                right = min([j for j in cand_pos if j > i], default=None)
+                bounds = (0 if left is None else (left + i) // 2,
+                          d.x.size - 1 if right is None else (i + right) // 2)
+                vals = _guess_peak(d.x, z, hand, only, bounds)
+            else:
+                vals = _guess_peak(d.x, z, hand, allowed)
+            # the modes of one sweep have similar widths: a weak line's start
+            # width is held to 5x the strongest one's (its half-height walk ran
+            # into the background, and from ~140 mT wide the fit carried the
+            # 16 GHz YIG PSSW 4 off to another line)
+            if w_first is None:
+                w_first = vals["hwhm"]
+            else:
+                vals["hwhm"] = min(vals["hwhm"], 5 * w_first)
             specs[f"p{k}_center"] = Spec(vals["center"], min=d.x[0] - 0.25 * span,
                                          max=d.x[-1] + 0.25 * span)
             # narrower than the point spacing cannot be resolved; letting the
@@ -389,9 +472,10 @@ def guess(x, y, setup: Setup, hand: int = 1,
             specs[f"p{k}_hwhm"] = Spec(max(vals["hwhm"], step), min=0.25 * step, max=span)
             specs[f"p{k}_amp"] = Spec(vals["amp"], min=0.0)
             specs[f"p{k}_phase"] = Spec(vals["phase"])
-        # the next peak is looked for in what this one leaves
+        # the next peak is looked for in what this one leaves, away from it
         z = z - vals["amp"] * np.exp(1j * np.deg2rad(vals["phase"])) * chi(
             d.x, vals["center"], vals["hwhm"], hand, setup.lineshape)
+        allowed &= np.abs(d.x - vals["center"]) > 4 * max(vals["hwhm"], 1e-12)
     return specs
 
 
@@ -547,7 +631,14 @@ def fit(x, y, setup: Setup, start: dict[str, Spec] | None = None) -> Result:
     d = prepare(x, y, setup)
     runs = []
     if setup.mode == "complex":
-        for h in ([setup.hand] if setup.hand else [1, -1]):
+        hands = [setup.hand] if setup.hand else [1, -1]
+        if not setup.hand and not start and setup.n_peaks > 1:
+            # several peaks: decide the hand on the strongest one alone, then fit
+            # everything once. The wrong hand's full fit starts from junk and
+            # wandered for ~30 s on a 10 000-point YIG sweep before losing.
+            picked = _pick_hand(x, y, setup)
+            hands = [picked] if picked else hands
+        for h in hands:
             if not start:
                 runs.append(_run(d, setup, h, guess(x, y, setup, hand=h)))
                 continue
@@ -557,6 +648,15 @@ def fit(x, y, setup: Setup, start: dict[str, Spec] | None = None) -> Result:
                 # which: for the mirror image, turn every peak by 180 deg, which
                 # keeps the value on resonance (chi -> conj(chi): +i -> -i)
                 runs.append(_run(d, setup, h, _turned(start, setup)))
+        if start and not setup.hand:
+            # and a fresh guess as a safety net: a poor start must not give a
+            # worse result than no start (a start mixing both hands ended at
+            # chi2 221 where the guess reaches 27, 2026-09-29). Parameters the
+            # operator FIXED stay fixed.
+            h = _pick_hand(x, y, setup) or 1
+            fresh = guess(x, y, setup, hand=h)
+            fresh.update({n: sp for n, sp in start.items() if n in fresh and not sp.vary})
+            runs.append(_run(d, setup, h, fresh))
     else:
         starts = [start] if start else []
         if not start:
@@ -598,6 +698,23 @@ def follow_range(x, y, setup: Setup, lo: float, hi: float) -> tuple[float, float
     xs = np.asarray(x, dtype=float)
     xs = xs[np.isfinite(xs)]
     return max(x0 + lo * w, float(xs.min())), min(x0 + hi * w, float(xs.max()))
+
+
+def _pick_hand(x, y, setup: Setup) -> int:
+    """The handedness from a quick one-peak fit, both ways, in a window of ten
+    widths around the strongest line; 0 if that cannot be done."""
+    try:
+        one = Setup(**{**setup.__dict__, "n_peaks": 1, "hand": 0})
+        g = guess(x, y, one, hand=1)
+        x0, w = g["p1_center"].value, g["p1_hwhm"].value
+        lo = x0 - 10 * w if setup.xmin is None else max(setup.xmin, x0 - 10 * w)
+        hi = x0 + 10 * w if setup.xmax is None else min(setup.xmax, x0 + 10 * w)
+        win = Setup(**{**one.__dict__, "xmin": lo, "xmax": hi})
+        dw = prepare(x, y, win)
+        runs = [(_run(dw, win, h, guess(x, y, win, hand=h)), h) for h in (1, -1)]
+        return min(runs, key=lambda rh: rh[0].chisqr)[1]
+    except Exception:
+        return 0
 
 
 def _turned(start: dict[str, Spec], setup: Setup) -> dict[str, Spec]:
@@ -725,6 +842,10 @@ def figure_fit(curve, res: Result, y, size=(6.4, 5.6)):
     model = res.evaluate(xx)
     rx, rr = residuals(res, curve.x, y)
     shown = displayed(curve.x, y, res.setup)        # derivative-divided when that is on
+    un = unwinder(res.setup, res.values, res.xc)    # the delay taken out, when fitted
+    if un is not None:
+        shown = Data(x=shown.x, y=shown.y * un(shown.x), xc=shown.xc)
+        model, rr = model * un(xx), rr * un(rx)
     if res.setup.mode == "complex":
         for part, fn, col in (("Re", np.real, "#1f77b4"), ("Im", np.imag, "#d62728")):
             ax.plot(shown.x, fn(shown.y), "o", ms=2.5, color=col, alpha=0.6,
@@ -736,7 +857,7 @@ def figure_fit(curve, res: Result, y, size=(6.4, 5.6)):
         ax.plot(xx, model, "-", color="#d62728", lw=1.5, label="fit")
         axr.plot(rx, rr, "o", ms=2, color="#1f77b4")
     axr.axhline(0, color="0.5", lw=0.8)
-    ax.set_ylabel(y_title(curve, res.setup))
+    ax.set_ylabel(y_title(curve, res.setup, unwound=un is not None))
     axr.set_ylabel("residual")
     axr.set_xlabel(axis_title(curve.x_name, curve.x_unit))
     ax.tick_params(labelbottom=False)
@@ -750,12 +871,40 @@ def figure_fit(curve, res: Result, y, size=(6.4, 5.6)):
     return fig
 
 
-def y_title(curve, setup: Setup) -> str:
-    """The y axis: the channel, S, or the derivative-divided d ln S / dx."""
+def y_title(curve, setup: Setup, unwound: bool = False) -> str:
+    """The y axis: the channel, S (with the delay taken out, if so drawn), or
+    the derivative-divided d ln S / dx."""
     from aaltoview.export import axis_title
     if setup.dd:
         return axis_title("∂_D S = ΔS / (Δx S)", f"1/{curve.x_unit}" if curve.x_unit else "")
+    if unwound:
+        return axis_title("S · e^{+i2πτ(x − xc)}", curve.y_unit)
     return axis_title(curve.y_name if setup.mode == "real" else "S", curve.y_unit)
+
+
+def unwinder(setup: Setup, values: dict | None, xc: float | None):
+    """x -> e^{+i 2 pi tau (x - xc)}, the cable's phase taken back out, for
+    DRAWING a fit with the delay option (None when there is nothing to unwind).
+    Raw, a 3.2 ns delay spins Re and Im through 60 turns over 1-20 GHz and the
+    data look like noise; unwound, the resonance is what is seen."""
+    if (setup.mode != "complex" or not setup.delay or setup.dd or not values
+            or "delay" not in values or xc is None):
+        return None
+    tau = values["delay"]
+    return lambda x: np.exp(2j * np.pi * tau * (np.asarray(x, dtype=float) - xc))
+
+
+def phase_turns(x, z) -> float:
+    """How many full turns the phase of z makes over the sweep (0 for real data)."""
+    z = np.asarray(z)
+    if not np.iscomplexobj(z):
+        return 0.0
+    ok = np.isfinite(np.asarray(x, dtype=float)) & np.isfinite(np.abs(z))
+    if ok.sum() < 3:
+        return 0.0
+    order = np.argsort(np.asarray(x, dtype=float)[ok])
+    ph = np.unwrap(np.angle(z[ok][order]))
+    return float(abs(ph[-1] - ph[0]) / (2 * np.pi))
 
 
 def fmt_pm(v: float, e: float | None) -> str:

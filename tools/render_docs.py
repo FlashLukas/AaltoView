@@ -252,6 +252,50 @@ def shot_dispersion(app, name: str, theme_name: str):
     pump(app, 0.2)
 
 
+def shot_yig(app, name: str, theme_name: str):
+    """200 nm YIG: uniform mode + PSSW n = 1-4 fitted together through A."""
+    try:
+        from fmr_fit.app import FitWindow
+    except ImportError:
+        print("  (fmr_fit not installed) -- skipped")
+        return
+    from aaltoview import export as E
+    from aaltoview.apps import viewer as VW
+    from aaltoview.data import load
+    theme.set_theme(theme_name)
+    VW.configure_pyqtgraph()
+    theme.apply(app)
+    path = next(DATA.glob("*/*_yig_200nm_field_sweeps.nc"))
+    ds = load(path).load()
+    curves = E.curves_along(ds, E.Selection("lockin", x="field"), "rf_freq",
+                            range(ds.sizes["rf_freq"]), path)
+    win = FitWindow()
+    win.setWindowTitle("FMR fit")
+    win.resize(*SIZE)
+    win.show()
+    pump(app, 0.3)
+    win.add_curves(curves)
+    win.peaks.setValue(5)
+    win.fit_all()
+    win.tabs.setCurrentWidget(win.dispersion)
+    tab = win.dispersion
+    tab.assign_pssw()
+    tab.pssw.setCurrentIndex(tab.pssw.findData("A"))
+    tab.d_edit.setText("200")
+    tab.ms_edit.setText("176")
+    tab._model_changed()
+    tab.fit()
+    pin_font(app)
+    win.resize(*SIZE)
+    pump(app, 1.5)
+    out = DOCS / f"{name}.png"
+    win.grab().save(str(out))
+    print(f"  {out.relative_to(HERE.parent)}")
+    win.close()
+    win.deleteLater()
+    pump(app, 0.2)
+
+
 def main() -> int:
     global DATA
     # A NEUTRAL folder: its path is on screen, and a published picture must not
@@ -273,6 +317,7 @@ def main() -> int:
     shot_fit(app, "fmr-fit-light", "light")
     shot_dispersion(app, "fmr-dispersion", "dark")
     shot_dispersion(app, "fmr-dispersion-light", "light")
+    shot_yig(app, "fmr-yig-pssw", "dark")
     return 0
 
 

@@ -123,6 +123,48 @@ all with one magnetic model.
 - **Results**: value ± 1σ with unit and meaning. You can copy them, save them
   as `.csv`/`.dat`, send them to Origin, or save both plots as an image.
 
+## Uniform mode and PSSW together: 200 nm YIG
+
+![200 nm YIG: uniform mode and PSSW n = 1-4 fitted through one exchange stiffness](../../docs/fmr-yig-pssw.png)
+
+The demo file `093000_yig_200nm_field_sweeps.nc` (from
+`tools/make_demo_data.py`) simulates 200 nm of YIG with the field in-plane,
+field sweeps at 9–16 GHz. It has the uniform mode plus four standing spin
+waves at lower field, with H_ex,n = 2A(nπ/d)²/Ms = 13, 52, 117 and 209 mT
+(A = 3.7 pJ/m, μ0Ms = 176 mT). The workflow:
+
+1. **Resonances:** set **peaks = 5** and click **Fit all**.
+   - Peaks are found as local maxima ranked by prominence, so a weak mode
+     next to a strong line is not lost.
+   - With several peaks, the hand is decided first on the strongest line.
+2. **Dispersion:** click **Assign PSSW by order**.
+   - In each sweep, the strongest peak is uniform.
+   - The peaks at lower field become n = 1, 2, … by their distance from it.
+   - Check the plot: each order should lie on its own line. A mode too weak
+     to fit would shift the numbering of the ones beyond it.
+3. Set **PSSW → exchange stiffness A**, **d = 200 nm**, **μ0Ms = 176 mT**,
+   then click **Fit**.
+   - One A for all orders, with M_eff and γ shared with the uniform mode.
+   - The fit gives back A = 3.700 pJ/m, M_eff = 176.0 mT,
+     γ/2π = 28.00 GHz/T and α = 3.0·10⁻⁴.
+   - With **exchange field per mode** instead, each H_ex,n is fitted on its
+     own, and A per mode is shown when d and μ0Ms are given. That's a check
+     of the n² law: pinning or a wrong d shows up as a different A per mode.
+
+## Working through a series
+
+- **Settings carry over.** When you set up or fit one curve and move to the
+  next, it takes the same settings: peaks, fit mode, background, hand,
+  lineshape, delay, derivative-divide and reference. A curve you've already
+  set up or fitted keeps its own. The fit range has its own rule (see "range
+  for the other curves").
+- **Frequency sweeps start sensibly.** A curve whose x axis is a frequency
+  gets the oscillator lineshape. If its phase winds more than two turns (a
+  VNA's cable delay), the delay option is switched on. With the delay option
+  on, the data, the fit and the residuals are drawn with the delay taken out
+  (S·e^{+i2πτ(f−fc)}). Otherwise Re and Im spin with the phase and look like
+  noise.
+
 ## Tests
 
 - `tests/test_fmr_model.py` recovers known parameters from simulated signals,

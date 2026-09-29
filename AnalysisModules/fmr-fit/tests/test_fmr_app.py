@@ -213,3 +213,41 @@ def test_derivative_divide_and_delay_from_the_window(win, tmp_path):
     # a real channel: no delay, no derivative-divide
     win.mode.setCurrentIndex(win.mode.findData("real"))
     assert not win.dd.isEnabled() and win.current().setup.dd == 0
+
+
+def test_the_settings_go_to_the_next_curve(win):
+    """Asked for 2026-09-29: set up and fit one sweep, go to the next -- same
+    settings. A curve already set up or fitted keeps its own."""
+    win.add_curves([_curve(60.0), _curve(100.0, seed=1), _curve(140.0, seed=2)])
+    win.peaks.setValue(2)
+    win.baseline.setCurrentText("constant")
+    win.fit()
+    win.curve_list.setCurrentItem(win.curve_list.topLevelItem(1))
+    e1 = win.entries[1]
+    assert e1.setup.n_peaks == 2 and e1.setup.baseline == "constant"
+    assert win.peaks.value() == 2                      # the controls show it
+    # the second curve set differently stays so; the third takes the newest
+    win.peaks.setValue(1)
+    win.curve_list.setCurrentItem(win.curve_list.topLevelItem(0))
+    assert win.entries[0].setup.n_peaks == 2           # fitted: kept
+    win.curve_list.setCurrentItem(win.curve_list.topLevelItem(2))
+    assert win.entries[2].setup.n_peaks == 1
+
+
+def test_a_frequency_sweep_gets_the_delay_and_is_drawn_without_it(win, tmp_path):
+    """Raw, a 3.2 ns delay spins Re and Im through ~60 turns and the sweep
+    looked like noise (screenshot, 2026-09-29): a frequency sweep whose phase
+    winds gets the delay option and the oscillator lineshape, and is drawn
+    with the delay taken out."""
+    from fmr_fit import model as M
+    DEMO, curves = _vna_curves(tmp_path)
+    win.add_curves(curves[2:3])                        # 60 mT
+    e = win.current()
+    assert e.setup.lineshape == "oscillator" and e.setup.delay
+    assert "electrical delay on" in win.status.text()
+    assert "delay" in e.start and e.start["delay"].value == pytest.approx(3.2, abs=0.05)
+    drawn = next(it for _, it in win._items if it.name() == "Re data")
+    x, re = drawn.getData()
+    im = next(it for _, it in win._items if it.name() == "Im data").getData()[1]
+    assert M.phase_turns(x, re + 1j * im) < 2          # was ~60 raw
+    assert "e^{+i2πτ" in win.plot.getAxis("left").labelText

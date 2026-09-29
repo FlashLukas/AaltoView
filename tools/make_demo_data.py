@@ -28,6 +28,12 @@ chi = f0 df / (f0^2 - f^2 - i f df), a 3.2 ns cable delay, a standing-wave
 ripple and a loss sloping with frequency -- VNA_DELAY / VNA_RIPPLE below --
 plus a sweep at 500 mT, where nothing resonates in the band: the reference.
 
+File 8 is 200 nm of YIG, field in the plane, field sweeps at 9-16 GHz: the
+uniform mode and four perpendicular standing spin waves (PSSW n = 1-4) at
+lower field, H_ex,n = 2 A (n pi / d)^2 / Ms = 13, 52, 117, 209 mT for the
+textbook A = 3.7 pJ/m, mu0 Ms = 176 mT; alpha = 3e-4, dB0 = 0.25 mT, lines
+~0.5 mT wide (hence 0.05 mT steps). YIG below.
+
 A second, ANISOTROPIC film for the angle-dependent files (5, 6): Meff = 1.4 T,
 in-plane uniaxial Bu = 12 mT along 90 deg, 4-fold B4 = 18 mT along 0 deg, 6-fold
 B6 = 3 mT along 15 deg, alpha = 0.004, dB0 = 1 mT -- field in the plane at angle
@@ -67,6 +73,28 @@ def vna_background(f):
 def oscillator(f, f0, df):
     """The damped-oscillator susceptibility, exact in f; = +i on resonance."""
     return f0 * df / (f0 * f0 - f * f - 1j * f * df)
+
+
+#: 200 nm YIG (file 8). amps: uniform, then PSSW n = 1, 2, 3, 4 (partly pinned
+#: surfaces: every mode couples a little, weaker with n)
+YIG = dict(Ms=176.0, A=3.7, d=200.0, alpha=3e-4, dB0=0.25,
+           amps=(10.0, 3.5, 1.2, 0.6, 0.3))
+
+
+def yig_hex(n: int) -> float:
+    """PSSW n exchange field (mT): 2 A (n pi / d)^2 / Ms, unpinned surfaces."""
+    k = n * np.pi / (YIG["d"] * 1e-9)
+    return 2 * 4e-7 * np.pi * YIG["A"] * 1e-12 * k * k / (YIG["Ms"] * 1e-3) * 1e3
+
+
+def yig_mode(b_mT, n: int):
+    """f0 (GHz) and FWHM in f (GHz) of YIG mode n (0 = uniform) at field b."""
+    b = np.asarray(b_mT, dtype=float) + (yig_hex(n) if n else 0.0)
+    ms = YIG["Ms"]
+    f0 = G / 1000 * np.sqrt(np.clip(b * (b + ms), 0, None))
+    bs = np.maximum(b, 5.0)          # df/dB diverges at zero field (see linewidth)
+    dfdb = G / 1000 * (2 * bs + ms) / (2 * np.sqrt(bs * (bs + ms)))
+    return f0, YIG["alpha"] * G / 1000 * (2 * b + ms) + YIG["dB0"] * dfdb
 
 
 #: the anisotropic film of the angle-dependent files
@@ -319,6 +347,25 @@ def main(argv=None) -> int:
                    {"type": "array", "param": "field", "values": fields7.tolist()},
                    lin("rf_freq", 1, 20, 1901)], ["s21"])}),
         out / "2026-09-18" / "110000_vna_freq_sweeps.nc", 2100.0)
+
+    # 8. 200 nm YIG: uniform mode + PSSW n = 1-4, field sweeps at 9-16 GHz
+    fy = np.arange(9.0, 17.0, 1.0)
+    by = np.linspace(0.0, 520.0, 10401)
+    zy = np.zeros((fy.size, by.size), dtype=complex)
+    for i, f in enumerate(fy):
+        for n, amp in enumerate(YIG["amps"]):
+            f0, df = yig_mode(by, n)
+            zy[i] += chi(f, f0, amp, df)
+    zy = zy * np.exp(1j * PHASE0) + noise(zy.shape, 0.05)
+    save(xr.Dataset(
+        complex_vars("lockin", ("rf_freq", "field"), zy, "uV"),
+        coords={"rf_freq": coord("rf_freq", fy, "GHz"), "field": coord("field", by, "mT")},
+        attrs={"name": "yig_200nm_field_sweeps", "_dims": ["rf_freq", "field"],
+               "comment": "YIG 200 nm, in-plane: uniform mode + PSSW n = 1-4",
+               "recipe_json": recipe("yig_200nm_field_sweeps", "", [
+                   {"type": "array", "param": "rf_freq", "values": fy.tolist()},
+                   lin("field", 0, 520, 10401)], ["lockin"])}),
+        out / "2026-09-19" / "093000_yig_200nm_field_sweeps.nc", 6200.0)
     return 0
 
 

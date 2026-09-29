@@ -31,9 +31,12 @@ from aaltoview.apps.viewer import TAB10, _float, _plain_axes
 from aaltoview.export import Curve, axis_title, save_figure
 
 from . import model as M
+from .dispersion import unit_kind
 from .dispersion_tab import DispersionTab
 
 #: what a range drawn on one curve does to the others
+#: the settings that go from one curve to the next (the range has its own rule)
+CARRIED = ("n_peaks", "mode", "baseline", "hand", "lineshape", "delay", "dd")
 RANGE_RULES = {"follow": "follows the peak", "same": "same values", "off": "not carried"}
 MODE_TEXT = {"complex": "Re + Im together", "real": "one channel (as shown)"}
 HAND_TEXT = {0: "auto", 1: "+1", -1: "−1"}
@@ -51,6 +54,7 @@ class Entry:
     own_range: bool = False             # the operator dragged this curve's band
     located: tuple | None = None        # (key, (x0, hwhm)): M.locate is a fit, done once
     reference: tuple | None = None      # (Entry, "divide" | "subtract"): taken out first
+    touched: bool = False               # the operator set this curve up or fitted it
 
     def y(self) -> np.ndarray:
         """What is fitted: the complex values or the shown channel, with the
@@ -255,8 +259,11 @@ class FitWindow(QtWidgets.QWidget):
         self.rule_combo.currentIndexChanged.connect(self._rule_changed)
         rr.addWidget(self.rule_combo, 1)
         lv.addLayout(rr)
-        #: the last band the operator drew: {source, lo, hi (in HWHM from x0), xmin, xmax}
+        #: the last band the operator drew: {source, lo, hi (in HWHM from x0), xmax, xmin}
         self.range_rule: dict | None = None
+        #: the settings of the curve last set up or fitted, for the next ones:
+        #: ({CARRIED: value}, reference) -- None until the operator does something
+        self.template: tuple | None = None
         split.addWidget(left)
 
         # ── right: plots, results ──────────────────────────────────────────
@@ -338,9 +345,20 @@ class FitWindow(QtWidgets.QWidget):
     # ── curves in ──────────────────────────────────────────────────────────
     def add_curves(self, curves: list[Curve]):
         first_new = len(self.entries)
+        notes = set()
         for c in curves:
             mode = "complex" if c.z is not None else "real"
-            e = Entry(c, M.Setup(mode=mode, baseline="linear"))
+            setup = M.Setup(mode=mode, baseline="linear")
+            if unit_kind(c.x_unit)[0] == "freq":
+                # a frequency sweep: the exact lineshape; and the delay on when
+                # the cable winds the phase (raw, the data look like noise)
+                setup.lineshape = "oscillator"
+                notes.add("oscillator lineshape")
+                turns = M.phase_turns(c.x, c.z) if c.z is not None else 0.0
+                if turns > 2:
+                    setup.delay = True
+                    notes.add(f"electrical delay on (the phase winds ~{turns:.0f} turns)")
+            e = Entry(c, setup)
             self.entries.append(e)
             it = QtWidgets.QTreeWidgetItem([c.label, "—"])
             it.setToolTip(0, f"{c.label}\n{c.source or 'unsaved run'}\n"
@@ -349,7 +367,10 @@ class FitWindow(QtWidgets.QWidget):
         self.curve_list.resizeColumnToContents(0)
         self.curve_list.setCurrentItem(self.curve_list.topLevelItem(first_new))
         n = len(curves)
-        self.say(f"received {n} curve{'s' if n != 1 else ''}")
+        msg = f"received {n} curve{'s' if n != 1 else ''}"
+        if notes and self.template is None:
+            msg += "; frequency sweeps: " + ", ".join(sorted(notes))
+        self.say(msg)
 
     def targets(self) -> list[Entry]:
         """What Fit all works on: the selected curves when there are several,
@@ -392,6 +413,7 @@ class FitWindow(QtWidgets.QWidget):
             self.table.setRowCount(0)
             self._redraw()
             return
+        self._take_template(e)
         self._filling = True
         try:
             self.peaks.setValue(e.setup.n_peaks)
@@ -428,6 +450,25 @@ class FitWindow(QtWidgets.QWidget):
                        lineshape=self.lineshape.currentData(),
                        delay=complex_ and self.delay.isChecked(),
                        dd=self.dd_k.value() if (complex_ and self.dd.isChecked()) else 0)
+
+    def _remember(self, e: Entry):
+        """What this curve is set to becomes the settings for the next ones."""
+        e.touched = True
+        self.template = ({k: getattr(e.setup, k) for k in CARRIED}, e.reference)
+
+    def _take_template(self, e: Entry):
+        """A curve not set up or fitted yet takes the last settings (asked for
+        2026-09-29: fit one sweep, go to the next, same settings)."""
+        if self.template is None or e.touched or e.result is not None:
+            return
+        opts, ref = self.template
+        if opts["mode"] == "complex" and e.curve.z is None:
+            opts = {**opts, "mode": "real", "delay": False, "dd": 0}
+        new = M.Setup(**{**e.setup.__dict__, **opts})
+        new_ref = ref if (ref is None or ref[0] is not e) else None
+        if new != e.setup or new_ref != e.reference:
+            e.setup, e.reference = new, new_ref
+            e.start, e.located = None, None     # guessed again with these settings
 
     def _complex_only(self, on: bool):
         """Hand, delay and derivative-divide need both quadratures."""
@@ -472,6 +513,7 @@ class FitWindow(QtWidgets.QWidget):
                 and old_ref == e.reference)
         keep = {k: v for k, v in (e.start or {}).items() if k.startswith("p")} if same else {}
         self._guess(e, keep=keep or None)
+        self._remember(e)
         self._fill_table()
         self._redraw()
 
@@ -556,8 +598,14 @@ class FitWindow(QtWidgets.QWidget):
     # ── parameters ─────────────────────────────────────────────────────────
     def _guess(self, e: Entry, keep, quiet=False) -> bool:
         try:
-            e.start = M.guess(e.curve.x, e.y(), e.setup,
-                              hand=e.setup.hand or 1, keep=keep)
+            y = e.y()
+            hand = e.setup.hand
+            if not hand and e.setup.mode == "complex":
+                # as fit() does -- for ONE peak too: peaks kept when more are
+                # added must belong to the same hand as the new ones (a start
+                # mixing both made every fit from it fail, 2026-09-29)
+                hand = M._pick_hand(e.curve.x, y, e.setup)
+            e.start = M.guess(e.curve.x, y, e.setup, hand=hand or 1, keep=keep)
         except Exception as exc:
             e.start = None
             if not quiet:
@@ -648,11 +696,13 @@ class FitWindow(QtWidgets.QWidget):
         if e is None:
             return
         e.setup = self._setup_from_controls(e)
+        e.reference = self._reference_from_controls(e)
         try:
             res = self._fit_entry(e, e.start)
         except Exception as exc:
             self.say(f"fit failed: {exc}", error=True)
             return
+        self._remember(e)
         self._after_fit([e])
         hand = f", hand {res.hand:+d}" if e.setup.mode == "complex" else ""
         warn = M.suspicious(res)
@@ -668,9 +718,11 @@ class FitWindow(QtWidgets.QWidget):
         bad = []
         # the reference sweep is not fitted with itself taken out of it
         targets = [e for e in self.targets() if ref is None or e is not ref[0]]
+        self._remember(cur)
         for e in targets:
             e.reference = ref
             e.located = None
+            e.touched = True
             mode = template.mode if (template.mode == "real" or e.curve.z is not None) else "real"
             # the model is shared, the RANGE is not: each curve keeps its own band
             # or gets the carried one around its own peak (never cur's field values)
@@ -734,17 +786,34 @@ class FitWindow(QtWidgets.QWidget):
             return
         parts = ([("Re", np.real, TAB10[0]), ("Im", np.imag, TAB10[3])]
                  if e.setup.mode == "complex" else [(c.y_name, np.real, TAB10[0])])
+        # with the delay option: drawn with the cable's phase taken out (fitted
+        # tau, or its start value), or Re and Im spin and look like noise
+        un = None
+        if e.result is not None and not show_start:
+            un = M.unwinder(e.setup, e.result.values, e.result.xc)
+        elif e.start is not None:
+            try:
+                xc = M.prepare(c.x, y, e.setup).xc
+                un = M.unwinder(e.setup, {n: sp.value for n, sp in e.start.items()}, xc)
+            except Exception:
+                un = None
+
+        def frame(x, v):
+            return v * un(x) if un is not None else v
+
         for name, fn, col in parts:
             self._add(self.plot, pg.PlotDataItem(
-                shown.x, fn(shown.y), pen=None, symbol="o", symbolSize=4, symbolPen=None,
-                symbolBrush=pg.mkBrush(QtGui.QColor(col)), name=f"{name} data"))
+                shown.x, fn(frame(shown.x, shown.y)), pen=None, symbol="o", symbolSize=4,
+                symbolPen=None, symbolBrush=pg.mkBrush(QtGui.QColor(col)),
+                name=f"{name} data"))
         model_vals = None
         xs = None
         if e.result is not None and not show_start:
             xs = np.linspace(*e.result.xrange, 800)
-            model_vals = e.result.evaluate(xs)
+            model_vals = frame(xs, e.result.evaluate(xs))
             label = "fit"
             rx, rr = M.residuals(e.result, c.x, y)
+            rr = frame(rx, rr)
             for name, fn, col in parts:
                 self._add(self.rplot, pg.PlotDataItem(rx, fn(rr), pen=None, symbol="o",
                                                       symbolSize=3, symbolPen=None,
@@ -755,9 +824,9 @@ class FitWindow(QtWidgets.QWidget):
             try:
                 d = M.prepare(c.x, y, e.setup)
                 xs = np.linspace(d.x[0], d.x[-1], 800)
-                model_vals = M.evaluate({n: s.value for n, s in e.start.items()}, xs,
-                                        e.setup, e.setup.hand or 1, d.xc,
-                                        dd_half=d.dd_half)
+                model_vals = frame(xs, M.evaluate({n: s.value for n, s in e.start.items()},
+                                                  xs, e.setup, e.setup.hand or 1, d.xc,
+                                                  dd_half=d.dd_half))
                 label = "start"
             except Exception:
                 model_vals = None
@@ -769,7 +838,7 @@ class FitWindow(QtWidgets.QWidget):
                                                      width=2, style=style),
                     name=f"{name} {label}"))
         self.plot.setLabel("bottom", axis_title(c.x_name, c.x_unit))
-        self.plot.setLabel("left", M.y_title(c, e.setup))
+        self.plot.setLabel("left", M.y_title(c, e.setup, unwound=un is not None))
         self.rplot.setLabel("bottom", axis_title(c.x_name, c.x_unit))
 
     def _add(self, plot, item):

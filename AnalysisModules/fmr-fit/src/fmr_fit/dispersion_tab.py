@@ -91,6 +91,14 @@ class DispersionTab(QtWidgets.QWidget):
             b = QtWidgets.QPushButton(text)
             b.clicked.connect(lambda _=False, u=use: self._use_all(u))
             pb.addWidget(b)
+        self.order_btn = QtWidgets.QPushButton("Assign PSSW by order")
+        self.order_btn.setToolTip(
+            "Per curve: the strongest peak = uniform; the peaks on the PSSW side (lower\n"
+            "field in a field sweep, higher frequency in a frequency sweep) = PSSW n = 1,\n"
+            "2, ... by their distance from it; others ignored. Assumes no mode is missing\n"
+            "in between -- check the plot: each PSSW order should lie on its own line.")
+        self.order_btn.clicked.connect(self.assign_pssw)
+        pb.addWidget(self.order_btn)
         pb.addStretch(1)
         lv.addLayout(pb)
 
@@ -270,6 +278,9 @@ class DispersionTab(QtWidgets.QWidget):
     def _fill_points(self):
         self._filling = True
         try:
+            # emptied first: a role drop-down of the old rows was left standing
+            # over the new first row
+            self.ptable.setRowCount(0)
             self.ptable.setRowCount(len(self.points))
             for r, p in enumerate(self.points):
                 unit = D.INTERNAL[p.swept]
@@ -309,6 +320,25 @@ class DispersionTab(QtWidgets.QWidget):
             (self.unused.discard if use else self.unused.add)(self._key(p))
         self._fill_points()
         self._redraw()
+
+    def assign_pssw(self):
+        entries, rows = self._rows()
+        if not rows:
+            return
+        sources = self._read_sources() if self.sources is not None else D.guess_sources(rows)
+        by_index = D.pssw_roles(rows, sources)
+        for (i, k), role in by_index.items():
+            self.roles[(id(entries[i]), k)] = role
+        self.refresh()
+        orders = D.pssw_orders(self.points)
+        if self.specs is not None:
+            fresh = D.default_specs(self.points, self._settings())
+            for n in orders:                    # start values from where they sit
+                if self.dres is None or f"Hex{n}" not in self.dres.values:
+                    self.specs[f"Hex{n}"] = fresh[f"Hex{n}"]
+        self._fill_params()
+        self.say(f"roles by order: uniform + PSSW n = {', '.join(map(str, orders)) or '-'}"
+                 " -- check that each order lies on its own line")
 
     def _role_changed(self, row: int, role: int):
         p = self.points[row]

@@ -145,6 +145,34 @@ def default_roles(res) -> dict[int, int]:
     return {k: (ROLE_UNIFORM if k == top else ROLE_IGNORE) for k in amps}
 
 
+def pssw_roles(rows, sources: dict[str, Source]) -> dict[tuple[int, int], int]:
+    """Roles by ORDER, per curve: the strongest peak is the uniform mode; the
+    peaks on the PSSW side of it -- lower field in a field sweep, higher
+    frequency in a frequency sweep, where the exchange field adds stiffness --
+    are PSSW n = 1, 2, ... by their distance from it; the rest are ignored.
+
+    Assumes no mode is missing in between (a PSSW too weak to fit would shift
+    the numbering of the ones beyond it): look at the result.
+    """
+    by_dim = {s[1]: role for role, s in sources.items() if s[0] == "dim"}
+    out: dict[tuple[int, int], int] = {}
+    for i, (c, res) in enumerate(rows):
+        swept = by_dim.get(c.x_name)
+        ks = list(range(1, res.setup.n_peaks + 1))
+        top = max(ks, key=lambda k: abs(res.values[f"p{k}_amp"]))
+        x_top = res.values[f"p{top}_center"]
+        sign = {"H": -1.0, "f": +1.0}.get(swept, 0.0)     # the side PSSW lie on
+        side = sorted((k for k in ks if k != top
+                       and sign * (res.values[f"p{k}_center"] - x_top) > 0),
+                      key=lambda k: abs(res.values[f"p{k}_center"] - x_top))
+        for k in ks:
+            out[(i, k)] = ROLE_IGNORE
+        out[(i, top)] = ROLE_UNIFORM
+        for n, k in enumerate(side, start=1):
+            out[(i, k)] = n
+    return out
+
+
 def points_from_fits(rows, sources: dict[str, Source],
                      roles: dict[tuple[int, int], int] | None = None,
                      notes: list[str] | None = None) -> tuple[list[Point], list[str]]:
