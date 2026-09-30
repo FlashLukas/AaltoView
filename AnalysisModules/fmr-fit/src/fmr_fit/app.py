@@ -70,18 +70,27 @@ class Entry:
         return M.reference(self.curve.x, y, ref.curve.x, yr, how)
 
 
-#: above this many points, data are drawn as a thin line, not as symbols:
-#: 40 000 symbols (a YIG sweep, Re + Im + residuals) took 0.4 s per redraw
-MANY_POINTS = 2000
+#: at most this many symbols across the plot: with more points in view, every
+#: 2nd, 3rd, ... is drawn (asked for 2026-09-30). All 40 000 symbols of a YIG
+#: sweep (Re + Im + residuals) took 0.4 s per redraw, and 10 000 on 900 pixels
+#: are a smear anyway. Zooming in brings them all back.
+MAX_SYMBOLS = 600
 
 
 def _points(x, y, color: str, size: int, name: str | None = None) -> pg.PlotDataItem:
-    """Measured points: symbols for a short sweep, a thin line for a long one."""
+    """Measured points, as symbols (thinned to the view by FitWindow._thin)."""
     col = QtGui.QColor(color)
-    if np.size(x) > MANY_POINTS:
-        return pg.PlotDataItem(x, y, pen=pg.mkPen(col, width=1), name=name, connect="finite")
-    return pg.PlotDataItem(x, y, pen=None, symbol="o", symbolSize=size, symbolPen=None,
+    item = pg.PlotDataItem(x, y, pen=None, symbol="o", symbolSize=size, symbolPen=None,
                            symbolBrush=pg.mkBrush(col), name=name)
+    item.thinned = True
+    return item
+
+
+def thin_step(x, lo: float, hi: float, most: int = MAX_SYMBOLS) -> int:
+    """Draw every k-th point so that no more than `most` fall between lo and hi."""
+    x = np.asarray(x, dtype=float)
+    visible = int(np.count_nonzero((x >= lo) & (x <= hi)))
+    return max(1, int(np.ceil(visible / most)))
 
 
 def _pretty(name: str) -> str:
@@ -297,12 +306,12 @@ class FitWindow(QtWidgets.QWidget):
         _plain_axes(self.rplot)
         for plot in (self.plot, self.rplot):
             # long sweeps: draw what the screen can show, not every point
-            plot.setDownsampling(auto=True, mode="peak")
-            plot.setClipToView(True)
+            plot.setClipToView(True)            # only what is in view is drawn
         band = QtGui.QColor(C["accent"]); band.setAlpha(22)
         self.region = pg.LinearRegionItem(brush=pg.mkBrush(band))
         self.region.setZValue(-10)
         self.region.sigRegionChangeFinished.connect(self._range_dragged)
+        self.plot.sigXRangeChanged.connect(self._thin)
         self.plot.addItem(self.region)
         self._items: list = []
         rv.addWidget(self.glw, 3)
@@ -854,10 +863,20 @@ class FitWindow(QtWidgets.QWidget):
         self.plot.setLabel("bottom", axis_title(c.x_name, c.x_unit))
         self.plot.setLabel("left", M.y_title(c, e.setup, unwound=un is not None))
         self.rplot.setLabel("bottom", axis_title(c.x_name, c.x_unit))
+        self._thin()
 
     def _add(self, plot, item):
         plot.addItem(item)
         self._items.append((plot, item))
+
+    def _thin(self, *_):
+        """Every k-th symbol when more than MAX_SYMBOLS would be in view."""
+        lo, hi = self.plot.viewRange()[0]
+        for _, item in self._items:
+            if getattr(item, "thinned", False) and item.xData is not None:
+                k = thin_step(item.xData, lo, hi)
+                if item.opts.get("downsample") != k:
+                    item.setDownsampling(ds=k, auto=False, method="subsample")
 
     # ── results out ────────────────────────────────────────────────────────
     def fitted(self) -> list[tuple[Curve, M.Result]]:

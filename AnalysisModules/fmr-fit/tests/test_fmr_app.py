@@ -251,3 +251,23 @@ def test_a_frequency_sweep_gets_the_delay_and_is_drawn_without_it(win, tmp_path)
     im = next(it for _, it in win._items if it.name() == "Im data").getData()[1]
     assert M.phase_turns(x, re + 1j * im) < 2          # was ~60 raw
     assert "e^{+i2πτ" in win.plot.getAxis("left").labelText
+
+
+def test_long_sweeps_draw_every_kth_symbol_and_zooming_brings_them_back(win):
+    """At most MAX_SYMBOLS symbols across the plot (asked for 2026-09-30)."""
+    from fmr_fit.app import MAX_SYMBOLS, thin_step
+    x = np.linspace(0, 200, 10001)
+    z = M.evaluate(dict(p1_center=100.0, p1_hwhm=0.5, p1_amp=1.0, p1_phase=0.0,
+                        bg_re=0.0, bg_im=0.0, slope_re=0.0, slope_im=0.0),
+                   x, M.Setup(), 1, 100.0)
+    c = Curve(x=x, y=np.abs(z), label="long", x_name="field", x_unit="mT", y_name="s",
+              y_unit="V", selection=Selection("s", x="field"), z=z)
+    win.add_curves([c])
+    data = [it for _, it in win._items if getattr(it, "thinned", False)]
+    assert data and all(it.opts["symbol"] == "o" for it in data)   # still symbols
+    win.plot.setXRange(0, 200, padding=0)
+    k = data[0].opts["downsample"]
+    assert k == thin_step(x, 0, 200) and 10001 / k <= MAX_SYMBOLS + 1
+    win.plot.setXRange(99, 101, padding=0)                          # zoom in: all
+    assert data[0].opts["downsample"] == 1
+    assert thin_step(x[:100], 0, 200) == 1                          # short: all
