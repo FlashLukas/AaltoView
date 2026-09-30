@@ -453,3 +453,33 @@ def test_the_notebook_recomputes_a_referenced_map(tmp_path):
                               style, source=src)
             ns = _run_notebook(E.write_notebook(nb_dir / "v.ipynb", m=m, style=style))
             np.testing.assert_allclose(ns["z"], m.z, equal_nan=True)
+
+
+def test_a_cut_of_a_referenced_map_is_the_line_on_the_map(tmp_path):
+    """Row / Column -> 1D of a referenced map: the numbers of the map through
+    the cursor, complex z referenced too (an analysis module gets the sample
+    alone), and the notebook regenerates it."""
+    src = _vna_map(tmp_path)
+    ds = xr.open_dataset(src, engine="h5netcdf").load()
+    ref = {"x": "freq", "y": "field", "mode": "row", "op": "divide", "i": -1}
+    for style, r in ((E.MapStyle(ref="row", ref_i=-1), ref),
+                     (E.MapStyle(ref="dd_x"), {**ref, "mode": "dd_x"})):
+        m, _ = E.make_map(ds, E.Selection("s21", x="freq", y="field"), style)
+        col = E.make_curve(ds, E.Selection("s21", x="freq", slices={"field": Slice("at", 1)},
+                                           ref=r), source=src)          # along freq, 40 mT
+        np.testing.assert_allclose(col.y, m.z[1], equal_nan=True)
+        row = E.make_curve(ds, E.Selection("s21", x="field", slices={"freq": Slice("at", 30)},
+                                           ref=r), source=src)          # along field
+        np.testing.assert_allclose(row.y, m.z[:, 30], equal_nan=True)
+    col = E.make_curve(ds, E.Selection("s21", x="freq", part="arg",
+                                       slices={"field": Slice("at", 1)}, ref=ref), source=src)
+    assert col.label == "field = 40 mT (÷ field = 500 mT)" and col.y_unit == "rad"
+    np.testing.assert_allclose(np.angle(col.z), col.y)
+    back = E.Selection.from_dict(col.selection.to_dict())
+    assert back.ref == ref
+    nb_dir = tmp_path / "nb"
+    nb_dir.mkdir()
+    ns = _run_notebook(E.write_notebook(nb_dir / "c.ipynb", curves=[col, row]))
+    (_, y1), (_, y2) = ns["lines"]
+    np.testing.assert_allclose(y1, col.y)
+    np.testing.assert_allclose(y2, row.y, equal_nan=True)

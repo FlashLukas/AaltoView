@@ -227,7 +227,7 @@ def test_the_complex_part_choice_follows_the_detector(viewer, tmp_path):
 
 def test_the_map_divided_by_a_reference_line(viewer):
     """Reference = one Y line, picked from its values or at the cursor; the
-    values of the axis follow the axis; the 1D cuts stay the raw data."""
+    values of the axis follow the axis; the 1D cuts are the referenced lines."""
     _open_first(viewer)                                   # x, y; freq held at 1 GHz
     m = viewer.map
     m.ref_combo.setCurrentIndex(m.ref_combo.findData("row"))
@@ -241,8 +241,13 @@ def test_the_map_divided_by_a_reference_line(viewer):
     assert m.ref_value.currentText() == "0 um"
     m.ref_op.setCurrentIndex(m.ref_op.findData("subtract"))
     np.testing.assert_allclose(m._map.z, [[0, 0], [10, 10], [20, 20]])
-    m._cut("row")
-    assert viewer.lines.curves[-1].y.tolist() == [100.0, 101.0]
+    m._cut("row")                                         # through y = 0 um
+    c = viewer.lines.curves[-1]
+    assert c.y.tolist() == [0.0, 0.0]                     # the map's row, referenced
+    assert c.label == "freq = 1 GHz, y = 0 um (− y = 0 um)"
+    m._place_cursor(1, 2)
+    m._cut("column")                                      # along y at x = 1
+    assert viewer.lines.curves[-1].y.tolist() == [0.0, 10.0, 20.0]
     m.controls.x_combo.setCurrentText("freq")             # the Y axis is now x...
     m.controls.y_combo.setCurrentText("y")
     assert m.ref_value.count() == 3

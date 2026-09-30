@@ -82,19 +82,26 @@ class Selection:
     y: str | None = None
     slices: dict[str, Slice] = field(default_factory=dict)
     part: str = "abs"
+    #: a CUT of a referenced map: {"x", "y" (the map's axes), "mode", "op", "i"}
+    #: -- the line is taken from the map AFTER the reference (see ref_line)
+    ref: dict | None = None
 
     def to_dict(self) -> dict:
-        return {"detector": self.detector, "x": self.x, "y": self.y, "part": self.part,
-                "slices": {d: {"mode": s.mode, "i0": int(s.i0),
-                               "i1": None if s.i1 is None else int(s.i1)}
-                           for d, s in self.slices.items()}}
+        d = {"detector": self.detector, "x": self.x, "y": self.y, "part": self.part,
+             "slices": {d: {"mode": s.mode, "i0": int(s.i0),
+                            "i1": None if s.i1 is None else int(s.i1)}
+                        for d, s in self.slices.items()}}
+        if self.ref:
+            d["ref"] = dict(self.ref)
+        return d
 
     @classmethod
     def from_dict(cls, d: dict) -> "Selection":
         return cls(detector=d["detector"], x=d["x"], y=d.get("y"),
                    part=d.get("part", "abs"),
                    slices={k: Slice(v["mode"], v["i0"], v.get("i1"))
-                           for k, v in d.get("slices", {}).items()})
+                           for k, v in d.get("slices", {}).items()},
+                   ref=dict(d["ref"]) if d.get("ref") else None)
 
 
 @dataclass
@@ -123,7 +130,7 @@ class MapStyle:
     cmap: str = "magma"
     invert: bool = False            # flip the colour map
     symmetric: bool = False         # limits +-max, centred on zero (Kerr signals)
-    auto: bool = True               # limits from the 1st/99th percentile
+    auto: bool = True               # limits from the 0.1st/99.9th percentile
     lo: float = 0.0                 # used when auto is False
     hi: float = 1.0
     log: bool = False               # log10 |value|
@@ -205,21 +212,69 @@ def make_curve(ds: xr.Dataset, sel: Selection, source: str | Path | None = None,
     sel = Selection.from_dict(sel.to_dict())        # detach from the caller's dict
     sel.y = None
     da = detector(ds, sel.detector)
-    red = reduce_cube(da, sel.x, None, sel.slices, sel.part)
-    y = np.asarray(red.data.values, dtype=float).copy()
+    cplx = np.iscomplexobj(da.values)
+    y_name = quantity_name(sel, cplx)
+    y_unit = "rad" if (sel.part == "arg" and cplx) else units_of(ds, sel.detector)
+    if sel.ref:
+        zl = ref_line(ds, sel)
+        y = np.asarray(apply_part(xr.DataArray(zl), sel.part).values, dtype=float).copy()
+        style, msel = _ref_style(sel)
+        y_name, y_unit = _ref_name_unit(ds, msel, style, y_name, y_unit)
+    else:
+        red = reduce_cube(da, sel.x, None, sel.slices, sel.part)
+        y = np.asarray(red.data.values, dtype=float).copy()
     x = coords_of(ds, sel.x, y.size).copy()
     if label is None:
         label = describe_slices(ds, sel) or sel.detector
+        if sel.ref:
+            label += f" ({reference_text(ds, msel, style)})"
     z = None
-    if np.iscomplexobj(da.values):
-        z = np.asarray(reduce_cube(da, sel.x, None, sel.slices, "complex").data.values,
-                       dtype=complex).copy()
+    if cplx:
+        z = (zl.astype(complex).copy() if sel.ref else
+             np.asarray(reduce_cube(da, sel.x, None, sel.slices, "complex").data.values,
+                        dtype=complex).copy())
     return Curve(x=x, y=y, label=label, x_name=sel.x, x_unit=units_of(ds, sel.x),
-                 y_name=quantity_name(sel, np.iscomplexobj(da.values)),
-                 y_unit="rad" if (sel.part == "arg" and np.iscomplexobj(da.values))
-                 else units_of(ds, sel.detector),
+                 y_name=y_name, y_unit=y_unit,
                  selection=sel, source=str(source) if source else None,
                  z=z, held=held_values(ds, sel))
+
+
+def _ref_style(sel: Selection) -> tuple["MapStyle", Selection]:
+    """The map a referenced cut came from: its style (reference only) and axes."""
+    r = sel.ref
+    return (MapStyle(ref=r["mode"], ref_op=r.get("op", "divide"), ref_i=int(r.get("i", -1))),
+            Selection(sel.detector, x=r["x"], y=r["y"], slices=sel.slices, part=sel.part))
+
+
+def ref_line(ds: xr.Dataset, sel: Selection) -> np.ndarray:
+    """A cut of a referenced map, as COMPLEX values along sel.x: the map (its
+    two axes, everything else as sel says) referenced as a whole, then the line
+    at the held index. So a column divided by the 800 mT column, a row divided
+    by its own value at 800 mT, a derivative-divide across the lines -- each
+    exactly what the map shows through the cursor."""
+    style, msel = _ref_style(sel)
+    held = msel.y if sel.x == msel.x else msel.x
+    if sel.x not in (msel.x, msel.y) or held == sel.x:
+        raise ValueError(f"a referenced cut runs along {msel.x} or {msel.y}")
+    da = detector(ds, sel.detector)
+    slices = {d: s for d, s in sel.slices.items() if d != held}
+    red = reduce_cube(da, msel.x, msel.y, slices, "complex")
+    ny, nx = red.data.shape
+    zc = reference_values(red.data.values, style, coords_of(ds, msel.x, nx),
+                          coords_of(ds, msel.y, ny))
+    k = sel.slices.get(held, Slice()).span(da.sizes[held])[0]
+    return np.asarray(zc[k] if held == msel.y else zc[:, k])
+
+
+def _ref_name_unit(ds, sel: Selection, style: "MapStyle", name: str, unit: str):
+    """'|s21| (÷ field = 800 mT)', and the unit a reference leaves."""
+    name = f"{name} ({reference_text(ds, sel, style)})"
+    if style.ref in ("dd_y", "dd_x") and sel.part != "arg":
+        dim = sel.y if style.ref == "dd_y" else sel.x
+        unit = f"1/{units_of(ds, dim)}" if units_of(ds, dim) else ""
+    elif style.ref_op == "divide" and sel.part != "arg":
+        unit = ""
+    return name, unit
 
 
 def held_values(ds: xr.Dataset, sel: Selection) -> dict[str, tuple[float, str]]:
@@ -307,12 +362,7 @@ def make_map(ds: xr.Dataset, sel: Selection, style: MapStyle | None = None,
         if red.averaged > 1 and cplx and sel.part in ("abs", "arg"):
             red.note = "coherent average (complex averaged, then " + sel.part + ")"
         z = np.asarray(red.data.values, dtype=float)
-        name = f"{name} ({reference_text(ds, sel, style)})"
-        if style.ref in ("dd_y", "dd_x") and sel.part != "arg":
-            dim = sel.y if style.ref == "dd_y" else sel.x
-            unit = f"1/{units_of(ds, dim)}" if units_of(ds, dim) else ""
-        elif style.ref_op == "divide" and sel.part != "arg":
-            unit = ""
+        name, unit = _ref_name_unit(ds, sel, style, name, unit)
     z = style_values(z, style)
     ny, nx = z.shape
     if style.norm != "none":
@@ -427,7 +477,11 @@ def map_levels(z: np.ndarray, style: MapStyle) -> tuple[float, float]:
     if not style.auto:
         lo, hi = float(style.lo), float(style.hi)
     elif fin.size:
-        lo, hi = float(np.percentile(fin, 1)), float(np.percentile(fin, 99))
+        # 0.1 / 99.9, not 1 / 99: a sharp resonance on a VNA map (a 10 MHz
+        # line in 16 GHz) covers < 1 % of the pixels, and 1 / 99 put the limits
+        # inside the noise -- the map showed noise at full contrast and the line
+        # clipped (2026-09-30). One hot pixel in 1000 is still ignored.
+        lo, hi = float(np.percentile(fin, 0.1)), float(np.percentile(fin, 99.9))
     else:
         lo, hi = 0.0, 1.0
     if style.symmetric:
@@ -738,6 +792,20 @@ def reference(z, mode, op, i, xs, ys):
         return out
 
 
+def ref_line(ds, c):
+    """A cut of a referenced map: the map referenced as a whole, then the line."""
+    r = c["ref"]
+    held = r["y"] if c["x"] == r["x"] else r["x"]
+    slices = {d: s for d, s in c["slices"].items() if d != held}
+    m = reduce(detector(ds, c["detector"]), r["x"], r["y"], slices, "complex")
+    xs = ds[r["x"]].values if r["x"] in ds.coords else np.arange(m.shape[1])
+    ys = ds[r["y"]].values if r["y"] in ds.coords else np.arange(m.shape[0])
+    z = reference(m.values, r["mode"], r.get("op", "divide"), r.get("i", -1), xs, ys)
+    n = ds.sizes[held]
+    k = min(max(int(c["slices"].get(held, {"i0": 0})["i0"]), 0), n - 1)
+    return part_of(z[k] if held == r["y"] else z[:, k], c["part"])
+
+
 def normalize(v, mode):
     v = np.asarray(v, dtype=float)
     fin = v[np.isfinite(v)]
@@ -854,9 +922,12 @@ def notebook_cells(nb_dir: Path, m: Map | None = None, style: MapStyle | None = 
             "lines = []\n"
             "for k, c in enumerate(CURVES):\n"
             "    ds = data[c['file']]\n"
-            "    y = reduce(detector(ds, c['detector']), c['x'], None, c['slices'], c['part'])\n"
+            "    if c.get('ref'):                  # a cut of a referenced map\n"
+            "        y = ref_line(ds, c)\n"
+            "    else:\n"
+            "        y = reduce(detector(ds, c['detector']), c['x'], None, c['slices'], c['part']).values\n"
             "    x = ds[c['x']].values if c['x'] in ds.coords else np.arange(y.size)\n"
-            "    yv = normalize(y.values, NORM) + k * OFFSET\n"
+            "    yv = normalize(y, NORM) + k * OFFSET\n"
             "    lines.append((x, yv))\n"
             "    ax.plot(x, yv, marker='o', ms=2.5, lw=1.2, label=c['label'])\n"
             f"ax.set_xlabel({curve_axis_titles(curves, norm)[0]!r})\n"

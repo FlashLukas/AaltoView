@@ -597,7 +597,7 @@ class MapPanel(_Panel):
         self.symmetric.setToolTip("Limits ±max, centred on zero. Use with red-blue for a signal "
                                   "that changes sign.")
         self.auto = QtWidgets.QCheckBox("auto limits"); self.auto.setChecked(True)
-        self.auto.setToolTip("1st to 99th percentile, so a single hot pixel does not flatten "
+        self.auto.setToolTip("0.1st to 99.9th percentile, so a single hot pixel does not flatten "
                              "the map. Untick to type limits, or drag the colour bar.")
         self.lo_edit = QtWidgets.QLineEdit(); self.hi_edit = QtWidgets.QLineEdit()
         for w, tip in ((self.lo_edit, "lower limit"), (self.hi_edit, "upper limit")):
@@ -637,7 +637,7 @@ class MapPanel(_Panel):
             "    across the map is in few lines, so the median is the background;\n"
             "  derivative-divide: (z[k+1] − z[k−1]) / (Δ · z[k]) along the axis\n"
             "    (Maier-Flaig 2018) -- cancels a background that is slow along it.\n"
-            "The 1D cuts stay the raw data (the FMR fit has its own reference).")
+            "Row / Column → 1D send the line as it is here, referenced.")
         rf.addWidget(self.ref_combo)
         self.ref_value = QtWidgets.QComboBox()
         self.ref_value.setToolTip("The reference line. Or: place the cursor on the map and "
@@ -663,7 +663,11 @@ class MapPanel(_Panel):
 
         self.glw = pg.GraphicsLayoutWidget()
         self.plot = self.glw.addPlot()
-        self.img = pg.ImageItem()
+        # autoDownsample AVERAGES blocks of pixels when the map has more points
+        # than the screen: without it, 16001 VNA frequencies in ~500 pixel rows
+        # were drawn as single picked points -- noise, and a narrow line could
+        # fall between the picks (2026-09-30)
+        self.img = pg.ImageItem(autoDownsample=True)
         self.plot.addItem(self.img)
         self.cbar = pg.ColorBarItem(colorMap=_pg_cmap("magma", False), interactive=True)
         self.cbar.setImageItem(self.img, insert_in=self.plot)
@@ -899,6 +903,9 @@ class MapPanel(_Panel):
         sel = self._map.selection
         i, j = self._cursor
         s = E.Selection.from_dict(sel.to_dict())
+        st = self.map_style()
+        if st.ref != "none":
+            s.ref = {"x": sel.x, "y": sel.y, "mode": st.ref, "op": st.ref_op, "i": st.ref_i}
         if which == "row":
             s.slices[sel.y] = V.Slice("at", j)
             s.y = None
