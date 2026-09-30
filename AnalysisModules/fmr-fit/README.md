@@ -201,7 +201,9 @@ is missing from a sweep. Instead:
    dispersion. Curves fitted by hand are never replaced.
 
 On the lab-style YIG sweeps, 3 hand-fitted sweeps are enough: all 12 are
-predicted within 0.003 GHz, and A, M_eff and γ come back exactly.
+predicted within 0.003 GHz, and A, M_eff and γ come back exactly. Step by step,
+with screenshots and the background subtraction:
+[the case study](../../docs/CASE_STUDY_FMR_PSSW.md).
 
 ## Working through a series
 

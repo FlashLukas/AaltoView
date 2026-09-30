@@ -6,9 +6,12 @@ A data viewer for **time-resolved MOKE and FMR measurements** (Aalto University,
 NanoSpin group), the Python successor of the LabVIEW **AaltoView**, whose name it carries again
 (it was `trmoke-dataviewer` until 2026-09-24). Open a scan of
 any number of dimensions, look at it as a map or as overlaid curves, average what
-you do not need, and send the result to a figure, a text file, **Origin** or a
-**Jupyter notebook**. It reads the `.nc` files the AaltoFlow scan engine writes and
-needs no instruments.
+you do not need, take a background out (÷ or − a reference line), and send the
+result to a figure, a text file, **Origin** or a **Jupyter notebook**, or into an
+**analysis module**. The first module, **FMR fit**, fits the Kittel mode and
+standing spin waves in field or VNA frequency sweeps, then fits the dispersion
+for γ, M_eff, anisotropy, the exchange stiffness and damping. It reads the `.nc` files the
+AaltoFlow scan engine writes and needs no instruments.
 
 ![a 3-D FMR cube: field against frequency at 2 um from the antenna](docs/map.png)
 
@@ -91,6 +94,18 @@ installed the first time it starts.
 *The simulated field sweeps at 6–12 GHz, sent from 1D plots and fitted with
 **Fit all**. The resonance fields and widths agree with the Kittel formula the
 data was made from; the tests check that.*
+
+**Case study:** [FMR with standing spin waves, background removed, three
+fits → all](docs/CASE_STUDY_FMR_PSSW.md). It works through 200 nm YIG measured
+with a VNA:
+
+- divide by a reference line to remove the cables;
+- fit the uniform mode + PSSW 1–4 on three sweeps by hand;
+- let the dispersion predict, bound and fit the other nine;
+- end with one exchange stiffness.
+
+It is reproduced by `tools/case_study_fmr_pssw.py`, and every number is
+checked against the truth the data was made from.
 
 Writing a new module: [docs/ANALYSIS_MODULES.md](docs/ANALYSIS_MODULES.md)
 (`tools/new_analysis_module.py` sets one up).
@@ -176,6 +191,7 @@ autocorrection.
 ```bash
 uv run pytest -q                              # viewer + modules, offline, GUI offscreen
 uv run python tools/render_docs.py            # refresh the screenshots in docs/
+uv run --all-packages python tools/case_study_fmr_pssw.py   # and the case study's
 $env:AALTOVIEW_TEST_ORIGIN = "1"; uv run pytest -q -k origin    # also pushes into Origin
 ```
 
