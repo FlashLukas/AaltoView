@@ -38,6 +38,32 @@ Bottom: the line at 7 GHz.*
 | **axis** | **k in rad/µm** (k = 2π/λ) or **1/λ in 1/µm**. The x unit (nm, µm, mm, m) is converted to µm. |
 | **show** | \|FFT\|, \|FFT\|² or log10 \|FFT\|. |
 
+### TR-MOKE unfold (80 / 100 MHz laser)
+
+A pulsed laser samples the precession f_rep times a second, so the lock-in sees
+a wave at f at the **alias** f − n·f_rep, where n·f_rep is the nearest harmonic
+and the alias lies in (−f_rep/2, +f_rep/2]. The lock-in cannot tell a negative
+alias from a positive one: on those lines it records the **complex
+conjugate**, i.e. a wave running the other way.
+
+In a complex FFT the branch then jumps between +k and −k every f_rep/2, which
+shows up as a dashed V. A real part doesn't show it, because it holds ±k
+equally anyway.
+
+**TR-MOKE unfold → 80 MHz / 100 MHz laser** conjugates those lines back before
+the FFT, so every line keeps the wave's true direction:
+
+- **Complex data only.** Each line's frequency comes from the Dispersion tab's
+  *frequency f* (normally the lines' own rf_freq).
+- **"other half"** conjugates the lines with a *positive* alias instead. Which
+  half is right depends on the lock-in's sign convention; if the branch comes
+  out at −k, tick it.
+- **Lines with no direction are left as they are.** A line exactly on a
+  harmonic (alias 0) or half-way between two (alias f_rep/2) records no
+  direction. With 10 MHz steps and an 80 MHz laser that is 2 lines in 8.
+- **The status line** says how many lines were conjugated, or why the unfold is
+  off.
+
 The spectrum is **normalised by the sum of the window**: a pure wave of
 amplitude A gives |F(k₀)| = A whatever the window, length or padding. Uneven
 steps are interpolated onto an even grid, and NaN holes (a running or aborted
@@ -123,7 +149,8 @@ All tables have AaltoView's three header rows (name / unit / comment).
 ## Tests
 
 - `tests/test_sw_fft.py` checks the transform against waves with a **known**
-  k:
+  k, and the TR-MOKE unfold against a branch conjugated the way an 80 MHz
+  laser does it:
   - both travel directions, and real vs complex data;
   - units, holes, uneven steps, offsets, padding vs resolution;
   - several peaks per line, and the width of the Hann peak.

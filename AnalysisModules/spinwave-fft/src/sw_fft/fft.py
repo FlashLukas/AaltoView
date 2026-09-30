@@ -298,3 +298,45 @@ def all_peaks(sp: Spectrum, ps: PeakSettings) -> list[Peak]:
         out.extend(find_peaks(sp.k, mag[i], ps, line=i))
     return out
 
+
+
+# ─────────────────────────────── TR-MOKE unfold ───────────────────────────────
+
+#: laser repetition rates offered (MHz)
+REP_RATES = (80.0, 100.0)
+
+
+def alias(f_ghz, f_rep_mhz: float) -> np.ndarray:
+    """The frequency (MHz) a pulsed laser of repetition rate f_rep samples a
+    precession at f down to: f - n f_rep, n the nearest harmonic, in
+    (-f_rep/2, +f_rep/2]."""
+    f = np.asarray(f_ghz, dtype=float) * 1e3
+    d = np.mod(f + f_rep_mhz / 2, f_rep_mhz) - f_rep_mhz / 2
+    # to 1 Hz: 6.6 GHz from 6600 MHz is 6600.000000000001 MHz, whose alias
+    # would be -39.99999 instead of the half-way 40 (no direction, not flipped)
+    d = np.round(d, 6)
+    return np.where(d == -f_rep_mhz / 2, f_rep_mhz / 2, d)
+
+
+def unfold(rows, f_ghz, f_rep_mhz: float, invert: bool = False):
+    """Undo the sign flip of stroboscopic (TR-MOKE) detection.
+
+    The laser samples the precession at f_rep, so the lock-in sees it at the
+    alias f - n f_rep. It cannot tell a negative alias from a positive one: on
+    the lines where the alias is negative it records the COMPLEX CONJUGATE --
+    a wave running the other way. In a complex FFT the branch then jumps
+    between +k and -k every f_rep / 2 (a dashed V). Those lines are
+    conjugated back here, so every line keeps the wave's true direction.
+
+    Which half is conjugated depends on the lock-in's sign convention and the
+    reference: `invert` takes the other half. Lines ON a harmonic or exactly
+    between two (alias 0 or f_rep / 2) carry no direction and are left as
+    they are.
+
+    Returns (rows, flipped): the corrected rows and a bool per line."""
+    rows = np.array(rows, dtype=complex, copy=True)
+    d = alias(f_ghz, f_rep_mhz)
+    flipped = (d > 0) if invert else (d < 0)
+    flipped &= np.isfinite(d) & (np.abs(d) < f_rep_mhz / 2)
+    rows[flipped] = np.conj(rows[flipped])
+    return rows, flipped

@@ -100,3 +100,39 @@ def test_several_peaks_strongest_first_and_the_side():
     assert [round(q.k, 1) for q in p] == [2.0, 5.0]
     # Hann: half AMPLITUDE at +-1 bin (1.44 bins is the half-POWER width)
     assert p[0].fwhm == pytest.approx(2 * np.pi / 40 * 2.0, rel=0.1)
+
+
+# ─────────────────────────────── TR-MOKE unfold ───────────────────────────────
+
+def test_the_alias_of_a_pulsed_laser():
+    f = np.array([1.70, 1.73, 1.75, 1.78, 1.80, 1.84])          # GHz
+    assert F.alias(f, 80.0) == pytest.approx([20, -30, -10, 20, 40, 0])
+    assert F.alias([2.03, 2.07], 100.0) == pytest.approx([30, -30])
+    # half-way stays half-way, whatever the rounding of the unit conversion
+    assert F.alias([6600.0 * 1e-3, 6.6], 80.0) == pytest.approx([40, 40])
+
+
+def test_unfold_puts_a_dashed_v_back_on_one_branch():
+    """TR-MOKE: every line with a negative alias arrives conjugated -- the wave
+    seems to run the other way. Unfolded, all lines are at +k again."""
+    x = np.linspace(0, 40, 321)
+    f = np.arange(1.70, 2.70, 0.01)                              # GHz, 10 MHz steps
+    k = 1.0 + 3.0 * (f - 1.70)                                   # a rising branch, rad/um
+    true = np.array([np.exp(1j * (kk * x + 0.4)) for kk in k])
+    d = F.alias(f, 80.0)
+    seen = np.where((d < 0)[:, None], np.conj(true), true)       # what the lock-in gives
+    sp = F.spectra(x, seen, F.Settings())
+    signs = np.sign([F.find_peaks(sp.k, m, F.PeakSettings())[0].k for m in sp.magnitude])
+    assert (signs < 0).sum() > 30 and (signs > 0).sum() > 30     # the dashed V
+    rows, flipped = F.unfold(seen, f, 80.0)
+    assert flipped.sum() == (d < 0).sum()
+    sp = F.spectra(x, rows, F.Settings())
+    got = np.array([F.find_peaks(sp.k, m, F.PeakSettings())[0].k for m in sp.magnitude])
+    assert np.all(got > 0)
+    assert got == pytest.approx(k, abs=0.03)
+    # the other half: everything at -k instead (the lock-in's other convention)
+    rows, _ = F.unfold(seen, f, 80.0, invert=True)
+    sp = F.spectra(x, rows, F.Settings())
+    ok = (np.abs(d) > 0) & (np.abs(d) < 40)                      # on a harmonic / half-way: no sign
+    signs = np.sign([F.find_peaks(sp.k, m, F.PeakSettings())[0].k for m in sp.magnitude])
+    assert np.all(signs[ok] < 0)

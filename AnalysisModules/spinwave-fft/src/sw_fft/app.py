@@ -144,6 +144,26 @@ class FFTWindow(QtWidgets.QWidget):
         self.tukey.valueChanged.connect(self.transform)
         for w in (self.show_, self.cmap):
             w.currentIndexChanged.connect(self._redraw)
+        # TR-MOKE: the laser aliases f to f - n f_rep; a negative alias arrives
+        # conjugated, and the complex FFT's branch jumps between +k and -k
+        row = QtWidgets.QHBoxLayout()
+        row.addWidget(QtWidgets.QLabel("TR-MOKE unfold"))
+        self.unfold = _combo([("off", 0.0)] + [(f"{r:g} MHz laser", r) for r in F.REP_RATES],
+                             "Stroboscopic detection aliases f to f − n·f_rep; where that is "
+                             "negative the lock-in\nrecords the complex conjugate (a wave "
+                             "running the other way): the branch jumps between\n+k and −k "
+                             "every f_rep/2. Unfold conjugates those lines back. Complex data "
+                             "only;\nthe frequency of each line comes from the Dispersion "
+                             "tab's 'frequency f'.")
+        self.unfold_invert = QtWidgets.QCheckBox("other half")
+        self.unfold_invert.setToolTip("Conjugate the lines with a POSITIVE alias instead: "
+                                      "the lock-in's sign\nconvention decides which half. "
+                                      "Try it if the branch comes out at −k.")
+        row.addWidget(self.unfold, 1)
+        row.addWidget(self.unfold_invert)
+        lv.addLayout(row)
+        self.unfold.currentIndexChanged.connect(self.transform)
+        self.unfold_invert.toggled.connect(self.transform)
         self.x_note = QtWidgets.QLabel("")
         self.x_note.setWordWrap(True)
         self.x_note.setStyleSheet(f"color:{C['muted']}; font-size:11px;")
@@ -416,7 +436,8 @@ class FFTWindow(QtWidgets.QWidget):
         inp = self.current()
         if inp is None:
             return
-        sp = self._guard("FFT", lambda: F.spectra(inp.x, inp.rows, self.settings(), inp.x_unit))
+        rows, note = self._unfolded(inp)
+        sp = self._guard("FFT", lambda: F.spectra(inp.x, rows, self.settings(), inp.x_unit))
         if sp is None:
             return
         old_unit = self.spectrum.k_unit if self.spectrum is not None else sp.k_unit
@@ -428,10 +449,29 @@ class FFTWindow(QtWidgets.QWidget):
                     edit.setText(f"{_float(edit.text(), 0.0) * f:.4g}")
         if self.peaks:                       # settings changed: find them again
             self.find_peaks(quiet=True)
+            if note:
+                self.say(f"peaks found again{note}", error=note.startswith(";  unfold OFF"))
         else:
             self._redraw()
             self.say(f"FFT of {len(inp.y)} lines: {sp.F.shape[1]} points in k, resolution "
-                     f"2π/L = {sp.resolution:.3g} {R.k_title(sp.k_unit)[1]}")
+                     f"2π/L = {sp.resolution:.3g} {R.k_title(sp.k_unit)[1]}{note}",
+                     error=note.startswith(";  unfold OFF"))
+
+    def _unfolded(self, inp: I.Input):
+        """The rows to transform: TR-MOKE-unfolded when asked (and possible)."""
+        rep = self.unfold.currentData() or 0.0
+        if not rep:
+            return inp.rows, ""
+        if not inp.complex or self.part.currentData() != "complex":
+            return inp.rows, ";  unfold OFF: it needs the complex (X + iY) signal"
+        fs = I.Source(self.f_src.currentData() or "constant", self._const(self.f_const))
+        f = np.array([I.quantity(inp, i, fs) for i in range(len(inp.y))])
+        if fs.how == "constant" or not np.isfinite(f).any():
+            return inp.rows, (";  unfold OFF: the lines have no frequency of their own "
+                              "(Dispersion tab: frequency f)")
+        rows, flipped = F.unfold(inp.rows, f, rep, self.unfold_invert.isChecked())
+        return rows, (f";  unfolded for {rep:g} MHz: {int(flipped.sum())} of {len(f)} "
+                      f"lines conjugated")
 
     def find_peaks(self, *_, quiet=False):
         inp, sp = self.current(), self.spectrum
@@ -554,6 +594,8 @@ class FFTWindow(QtWidgets.QWidget):
         if self._filling:
             return
         self._const_enable()
+        if self.unfold.currentData():        # the unfold needs each line's frequency
+            self.transform()
         self._make_points()
         self._draw_dispersion()
 
