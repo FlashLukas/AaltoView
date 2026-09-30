@@ -8,7 +8,7 @@ NanoSpin group), the Python successor of the LabVIEW **AaltoView**, whose name i
 any number of dimensions, look at it as a map or as overlaid curves, average what
 you do not need, take a background out (÷ or − a reference line), and send the
 result to a figure, a text file, **Origin** or a **Jupyter notebook**, or into an
-**analysis module**. **FMR fit** fits the Kittel mode and standing spin waves
+**analysis module**. **VNA-FMR fit** fits the Kittel mode and standing spin waves
 in field or VNA frequency sweeps, then fits the dispersion for γ, M_eff,
 anisotropy, the exchange stiffness and damping. **Spin-wave FFT** transforms
 every line of a position × frequency map into k-space, finds the wavevectors
@@ -82,7 +82,7 @@ and a busy or crashed module never takes the viewer down. A module is a folder i
 **`AnalysisModules/`**: drop one in and the viewer lists it. Its packages are
 installed the first time it starts.
 
-- **FMR fit** ([AnalysisModules/fmr-fit](AnalysisModules/fmr-fit/README.md)): complex
+- **VNA-FMR fit** ([AnalysisModules/vna-fmr-fit](AnalysisModules/vna-fmr-fit/README.md)): complex
   Lorentzian for VNA data. It gives the resonance position, the linewidth
   (HWHM and FWHM, with 1σ errors), the amplitude and the mixing phase. It fits
   Re and Im together, has a fit range, several peaks, and fixed or bounded
@@ -109,7 +109,7 @@ installed the first time it starts.
 stripe's dispersion, and the fit gives back μ0Ms and the width; the tests check
 that against the numbers the data was made from.*
 
-![FMR fit: four field sweeps fitted](docs/fmr-fit.png)
+![VNA-FMR fit: four field sweeps fitted](docs/fmr-fit.png)
 
 *The simulated field sweeps at 6–12 GHz, sent from 1D plots and fitted with
 **Fit all**. The resonance fields and widths agree with the Kittel formula the

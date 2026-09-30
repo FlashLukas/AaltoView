@@ -159,7 +159,7 @@ def test_a_dropped_module_folder_is_found(tmp_path, monkeypatch):
 
 def test_the_fmr_fit_module_in_this_repository_is_found():
     m = next((m for m in AL.installed() if m.key == "fmr_fit"), None)
-    assert m is not None and m.folder.name == "fmr-fit"
+    assert m is not None and m.folder.name == "vna-fmr-fit"
     cmd, _ = AL.launch_command(m)
     assert cmd[-2:] == ["-m", "fmr_fit"]
     if "uv" in Path(cmd[0]).stem:          # uv run: installs a new module's packages first

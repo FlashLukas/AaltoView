@@ -1,4 +1,4 @@
-"""The FMR fit window, offscreen: curves in, fit, results out."""
+"""The VNA-FMR fit window, offscreen: curves in, fit, results out."""
 
 import os
 

@@ -1,7 +1,7 @@
 [project]
 name = "aaltoview"
 version = "0.1.0"
-description = "Data viewer for AaltoFlow measurements (.nc): N-D maps and 1-D overlays, background references, drop-in analysis modules (FMR fit: Kittel, PSSW, damping), export to files, Origin and Jupyter"
+description = "Data viewer for AaltoFlow measurements (.nc): N-D maps and 1-D overlays, background references, drop-in analysis modules (VNA-FMR fit: Kittel, PSSW, damping), export to files, Origin and Jupyter"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.11"

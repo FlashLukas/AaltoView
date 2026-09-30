@@ -1,4 +1,4 @@
-"""app.py -- the FMR fit window. The maths is in model.py; this is the widgets.
+"""app.py -- the VNA-FMR fit window. The maths is in model.py; this is the widgets.
 
     +-----------------------+------------------------------------------------+
     | CURVES (from the      |  data + fit  (drag the shaded band = range)    |
@@ -119,7 +119,7 @@ class FitWindow(QtWidgets.QWidget):
         outer = QtWidgets.QVBoxLayout(self)
         outer.setContentsMargins(14, 12, 14, 12)
         outer.setSpacing(8)
-        title = QtWidgets.QLabel("FMR FIT"); title.setObjectName("title")
+        title = QtWidgets.QLabel("VNA-FMR FIT"); title.setObjectName("title")
         outer.addWidget(title)
         # two stages: each curve's resonance, then all resonances together
         self.tabs = QtWidgets.QTabWidget()

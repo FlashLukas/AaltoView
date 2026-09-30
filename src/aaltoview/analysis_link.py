@@ -175,7 +175,7 @@ def beacon_dir() -> Path:
 class Running:
     key: str
     name: str
-    title: str                          # "FMR fit" or "FMR fit 2": what the window says
+    title: str                          # "VNA-FMR fit" or "VNA-FMR fit 2": what the window says
     port: int
     pid: int
     beacon: Path
@@ -373,7 +373,7 @@ class Listener:
         self._sock = ctx.socket(zmq.REP)
         self._sock.setsockopt(zmq.LINGER, 0)
         self.port = self._sock.bind_to_random_port("tcp://127.0.0.1")
-        # "FMR fit 2" when one is already open, so the viewer's menu can tell
+        # "VNA-FMR fit 2" when one is already open, so the viewer's menu can tell
         # the windows apart
         others = [b for b in beacons() if b.key == self.info.key]
         if others:

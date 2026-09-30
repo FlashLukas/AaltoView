@@ -189,8 +189,8 @@ def pose_map_reference(v):
 
 
 def shot_fit(app, name: str, theme_name: str):
-    """The FMR fit module (AnalysisModules/fmr-fit) with the demo field sweeps, all
-    fitted -- what arrives after 1D plots -> Analysis > FMR fit."""
+    """The VNA-FMR fit module (AnalysisModules/vna-fmr-fit) with the demo field sweeps, all
+    fitted -- what arrives after 1D plots -> Analysis > VNA-FMR fit."""
     try:
         from fmr_fit.app import FitWindow
     except ImportError:
@@ -206,7 +206,7 @@ def shot_fit(app, name: str, theme_name: str):
     ds = load(path).load()
     curves = E.curves_along(ds, E.Selection("lockin", x="field"), "rf_freq", range(4), path)
     win = FitWindow()
-    win.setWindowTitle("FMR fit")
+    win.setWindowTitle("VNA-FMR fit")
     win.resize(*SIZE)
     win.show()
     pump(app, 0.3)
@@ -242,7 +242,7 @@ def shot_dispersion(app, name: str, theme_name: str):
     ds = load(path).load()
     curves = E.curves_along(ds, E.Selection("s21", x="field"), "phi_H", range(36), path)
     win = FitWindow()
-    win.setWindowTitle("FMR fit")
+    win.setWindowTitle("VNA-FMR fit")
     win.resize(*SIZE)
     win.show()
     pump(app, 0.3)
@@ -282,7 +282,7 @@ def shot_yig(app, name: str, theme_name: str):
     curves = E.curves_along(ds, E.Selection("lockin", x="field"), "rf_freq",
                             range(ds.sizes["rf_freq"]), path)
     win = FitWindow()
-    win.setWindowTitle("FMR fit")
+    win.setWindowTitle("VNA-FMR fit")
     win.resize(*SIZE)
     win.show()
     pump(app, 0.3)

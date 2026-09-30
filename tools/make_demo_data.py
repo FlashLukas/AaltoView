@@ -52,7 +52,7 @@ in-plane uniaxial Bu = 12 mT along 90 deg, 4-fold B4 = 18 mT along 0 deg, 6-fold
 B6 = 3 mT along 15 deg, alpha = 0.004, dB0 = 1 mT -- field in the plane at angle
 phi_H. The resonance comes from the textbook in-plane formula with the
 equilibrium angle found by brute force (inplane() below), deliberately NOT from
-the FMR fit module's code, so that module can be tested against it.
+the VNA-FMR fit module's code, so that module can be tested against it.
 """
 
 from __future__ import annotations

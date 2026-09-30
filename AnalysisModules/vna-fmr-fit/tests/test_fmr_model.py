@@ -1,4 +1,4 @@
-"""The FMR fit: does it give back the numbers that went in?
+"""The VNA-FMR fit: does it give back the numbers that went in?
 
 Synthetic curves with known resonance, width, amplitude and phase, both
 handednesses, noise and holes; then the simulated measurements of

@@ -1,5 +1,5 @@
 [project]
-name = "aaltoview-fmr-fit"
+name = "aaltoview-vna-fmr-fit"
 version = "0.1.0"
 description = "AaltoView analysis module: fit FMR resonances (complex Lorentzian, VNA), then Kittel / anisotropy / damping"
 license = "MIT"
@@ -13,7 +13,7 @@ dependencies = [
 # through anything installed: drop the folder into AnalysisModules/.
 
 [project.scripts]
-aaltoview-fmr-fit = "fmr_fit.__main__:main"
+aaltoview-vna-fmr-fit = "fmr_fit.__main__:main"
 
 [tool.uv.sources]
 aaltoview = { workspace = true }

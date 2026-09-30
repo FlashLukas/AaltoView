@@ -156,7 +156,7 @@ def main() -> int:
     say("       Hex,n = " + ", ".join(f"{DEMO.yig_hex(n):.2f}" for n in range(1, 5)) + " mT")
 
     win = FitWindow()
-    win.setWindowTitle("FMR fit")
+    win.setWindowTitle("VNA-FMR fit")
     win.resize(*R.SIZE)
     win.show()
     R.pump(app, 0.3)

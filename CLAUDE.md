@@ -22,7 +22,7 @@ NanoSpin group, Aalto University. Read `README.md` first.
 - `AnalysisModules/<name>/` -- analysis modules, DROP-IN: a folder with
   `module.toml` (the menu entry) + `pyproject.toml`; the viewer scans the folder,
   the workspace glob `AnalysisModules/*` takes it in, `uv run --all-packages`
-  installs its packages on first start. `AnalysisModules/fmr-fit` (curves; a
+  installs its packages on first start. `AnalysisModules/vna-fmr-fit` (curves; a
   map as one curve per row) and `AnalysisModules/spinwave-fft` (maps: spatial
   FFT, Kalinikos-Slavin stripe dispersion). A map goes over the wire as
   `export.MapData` (`add_maps`). How to write one: `docs/ANALYSIS_MODULES.md`;

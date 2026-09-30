@@ -1,8 +1,8 @@
 # Case study: FMR with standing spin waves, background removed, three fits → all
 
 This is a worked example from raw VNA data to the exchange stiffness. It uses
-the viewer and the **FMR fit** module
-([AnalysisModules/fmr-fit](../AnalysisModules/fmr-fit/README.md)) the way you
+the viewer and the **VNA-FMR fit** module
+([AnalysisModules/vna-fmr-fit](../AnalysisModules/vna-fmr-fit/README.md)) the way you
 would at the lab PC. It shows three things:
 
 1. **Background subtraction.** The cables, the amplifier and the stripline
@@ -106,7 +106,7 @@ ripple.
 ## Step 3 – fit three sweeps by hand
 
 In **1D plots**: X = `rf_freq`, **one per value of field**, select all 13,
-**Add selected**, then **Analysis → Start FMR fit and send**. Every sweep
+**Add selected**, then **Analysis → Start VNA-FMR fit and send**. Every sweep
 arrives with the oscillator lineshape and the delay option on, because a
 frequency sweep whose phase winds is recognised as VNA data.
 
@@ -233,10 +233,10 @@ here, with errors as error bars in Origin.
 
 ## Where this is tested
 
-`AnalysisModules/fmr-fit/tests/test_fmr_predict.py` runs steps 3–6 through the
+`AnalysisModules/vna-fmr-fit/tests/test_fmr_predict.py` runs steps 3–6 through the
 window on this file. It asserts that every predicted peak is within 3 MHz of
 the truth, that nothing is flagged, that 25 mT gets PSSW 1–4 only, and that A
 and M_eff come back within 0.1 %. It also asserts that the same 200 mT fit
 without the reference misses (step 2).
-`AnalysisModules/fmr-fit/tests/test_fmr_yig_vna.py` covers the "Fit all by
+`AnalysisModules/vna-fmr-fit/tests/test_fmr_yig_vna.py` covers the "Fit all by
 order" route for comparison.

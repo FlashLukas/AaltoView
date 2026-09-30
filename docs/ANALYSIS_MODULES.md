@@ -6,8 +6,9 @@ The viewer sends curves to it from **1D plots → Analysis**, and whole maps fro
 **Map → Analysis**.
 
 ```
-AaltoView ──"Analysis" menu──►  FMR fit      (AnalysisModules/fmr-fit)
-          ──────────────────►  <your module> (AnalysisModules/<name>)
+AaltoView ──"Analysis" menu──►  VNA-FMR fit    (AnalysisModules/vna-fmr-fit)
+          ──────────────────►  Spin-wave FFT  (AnalysisModules/spinwave-fft)
+          ──────────────────►  <your module>  (AnalysisModules/<name>)
 ```
 
 ## Drop in, and it is there
@@ -124,7 +125,7 @@ How a map arrives depends on the module:
 - **The module takes only curves:** the viewer sends those same curves, and its
   menu says "(as curves, one per row)".
 
-The FMR fit module accepts maps this way. A field × frequency map with
+The VNA-FMR fit module accepts maps this way. A field × frequency map with
 X = `rf_freq` becomes one frequency sweep per field, ready for its Dispersion
 tab.
 
@@ -140,7 +141,7 @@ receives and plots curves. Then:
 
 1. Put the maths in `model.py`, with no Qt, and test it (`tests/`). Check the
    fit against numbers you KNOW, such as simulated data with known parameters
-   (see `AnalysisModules/fmr-fit/tests/test_fmr_model.py`).
+   (see `AnalysisModules/vna-fmr-fit/tests/test_fmr_model.py`).
 2. Build the window in `app.py`. The one rule is that
    `add_curves(list[Curve])` exists (add `add_maps(list[MapData])` and
    `"maps"` in `accepts` to take whole maps). `run_module()` (in

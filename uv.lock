@@ -16,8 +16,8 @@ resolution-markers = [
 [manifest]
 members = [
     "aaltoview",
-    "aaltoview-fmr-fit",
     "aaltoview-sw-fft",
+    "aaltoview-vna-fmr-fit",
 ]
 
 [[package]]
@@ -66,21 +66,6 @@ provides-extras = ["gui", "origin"]
 dev = [{ name = "pytest", specifier = ">=8" }]
 
 [[package]]
-name = "aaltoview-fmr-fit"
-version = "0.1.0"
-source = { editable = "AnalysisModules/fmr-fit" }
-dependencies = [
-    { name = "aaltoview", extra = ["gui"] },
-    { name = "lmfit" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "aaltoview", extras = ["gui"], editable = "." },
-    { name = "lmfit", specifier = ">=1.3" },
-]
-
-[[package]]
 name = "aaltoview-sw-fft"
 version = "0.1.0"
 source = { editable = "AnalysisModules/spinwave-fft" }
@@ -94,6 +79,21 @@ dependencies = [
 requires-dist = [
     { name = "aaltoview", extras = ["gui"], editable = "." },
     { name = "scipy", specifier = ">=1.10" },
+]
+
+[[package]]
+name = "aaltoview-vna-fmr-fit"
+version = "0.1.0"
+source = { editable = "AnalysisModules/vna-fmr-fit" }
+dependencies = [
+    { name = "aaltoview", extra = ["gui"] },
+    { name = "lmfit" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "aaltoview", extras = ["gui"], editable = "." },
+    { name = "lmfit", specifier = ">=1.3" },
 ]
 
 [[package]]

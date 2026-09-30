@@ -1,10 +1,10 @@
-# FMR fit
+# VNA-FMR fit
 
 An AaltoView analysis module (drop-in: this folder in `AnalysisModules/`). It fits ferromagnetic resonances on 1-D curves
 measured by direct detection (a VNA's S21; not the derivative lineshape of a
 field-modulated lock-in).
 
-![FMR fit with the simulated field sweeps](../../docs/fmr-fit.png)
+![VNA-FMR fit with the simulated field sweeps](../../docs/fmr-fit.png)
 
 ## The model
 
@@ -34,8 +34,8 @@ phase. On *auto*, both are tried and the better one is kept.
 
 ## Use
 
-1. In AaltoView, 1D plots: add the sweeps, then **Analysis → Start FMR fit
-   and send** (or **Send to FMR fit** if it is already open).
+1. In AaltoView, 1D plots: add the sweeps, then **Analysis → Start VNA-FMR fit
+   and send** (or **Send to VNA-FMR fit** if it is already open).
 2. Each curve arrives with guessed start values (dashed line).
 3. **Fit** fits the curve on screen. **Fit all** fits every curve with the same
    model, one at a time: each row fills in as it is fitted, and the button reads
