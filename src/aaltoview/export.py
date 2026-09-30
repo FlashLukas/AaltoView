@@ -942,8 +942,12 @@ def _rel(source: str, nb_dir: Path) -> str:
 
 def notebook_cells(nb_dir: Path, m: Map | None = None, style: MapStyle | None = None,
                    curves: list[Curve] | None = None, norm: str = "none",
-                   offset: float = 0.0, logy: bool = False) -> list[dict]:
-    """The cells of the notebook, as a list (so a test can execute the code)."""
+                   offset: float = 0.0, logy: bool = False,
+                   loading_script: str | Path | None = None) -> list[dict]:
+    """The cells of the notebook, as a list (so a test can execute the code).
+
+    loading_script: the viewer read the files through this script
+    (aaltoview/loading.py) -- the notebook reads them through it too."""
     curves = [c for c in (curves or []) if c.visible]
     sources = []
     for s in ([m.source] if m else []) + [c.source for c in curves]:
@@ -958,11 +962,24 @@ def notebook_cells(nb_dir: Path, m: Map | None = None, style: MapStyle | None = 
                  "recomputed from the measurement files, so you can change a "
                  "range or an average and run it again.\n\n"
                  + "\n".join(f"* `{Path(s).name}`" for s in sources) + "\n"),
-             _code(_NB_HELPERS),
-             _code("FILES = " + _py({f"f{i}": _rel(s, nb_dir)
-                                    for i, s in enumerate(sources)})
-                   + "\ndata = {key: load(path) for key, path in FILES.items()}\n"
-                   "data['f0']")]
+             _code(_NB_HELPERS)]
+    files = "FILES = " + _py({f"f{i}": _rel(s, nb_dir) for i, s in enumerate(sources)})
+    if loading_script is None:
+        cells.append(_code(files + "\ndata = {key: load(path) for key, path in FILES.items()}\n"
+                                   "data['f0']"))
+    else:
+        # the correction the viewer applied, applied here the same way (the
+        # script may use aaltoview.loading's helpers: AaltoView must be installed)
+        cells.append(_md(f"The files are read through the loading script "
+                         f"`{Path(loading_script).name}`, as they were in the viewer."))
+        cells.append(_code(
+            files + f"\nLOADING_SCRIPT = {_rel(str(loading_script), nb_dir)!r}\n\n"
+            "import importlib.util\n"
+            "_spec = importlib.util.spec_from_file_location('loading_script', LOADING_SCRIPT)\n"
+            "_script = importlib.util.module_from_spec(_spec)\n"
+            "_spec.loader.exec_module(_script)\n"
+            "data = {key: _script.load(load(path), path) for key, path in FILES.items()}\n"
+            "data['f0']"))
     key = {s: f"f{i}" for i, s in enumerate(sources)}
 
     if m is not None:

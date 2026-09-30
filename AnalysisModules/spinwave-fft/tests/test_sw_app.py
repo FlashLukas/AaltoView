@@ -106,3 +106,41 @@ def test_a_real_input_offers_no_imaginary_part(win, stripe_map):
     win.add_maps([real])
     assert win.part.currentData() == "real"
     assert not win.part.model().item(win.part.findData("imag")).isEnabled()
+
+
+def test_width_modes_can_be_switched_off(win):
+    from PySide6 import QtCore
+    from sw_fft import waveguide as W
+    win.pinning.setCurrentIndex(win.pinning.findData("none"))
+    for r, n in enumerate(W.PARAMS):
+        enabled = bool(win.mtable.item(r, 4).flags() & QtCore.Qt.ItemIsEnabled)
+        assert enabled == (n not in W.WIDTH_PARAMS), n
+    win.pinning.setCurrentIndex(win.pinning.findData("guslienko"))
+    assert win.mtable.item(list(W.PARAMS).index("w"), 4).flags() & QtCore.Qt.ItemIsEnabled
+
+
+def test_tr_moke_unfold_in_the_window(win, stripe_map):
+    """The stripe map as a TR-MOKE with an 80 MHz laser would record it: lines
+    with a negative alias conjugated. Unfold (80 MHz) puts every peak at +k."""
+    import copy
+    from sw_fft import fft as F
+    ds, path, m = stripe_map
+    seen = copy.deepcopy(m)
+    d = F.alias(seen.y / 1000.0, 80.0)                           # rf_freq in MHz
+    seen.z = np.where((d < 0)[:, None], np.conj(m.z), m.z)
+    win.add_maps([seen])
+    win.kmin.setText("0.5")
+    win.find_peaks()
+    assert any(p.k < 0 for p in win.peaks)                       # the dashed V
+    win.unfold.setCurrentIndex(win.unfold.findData(80.0))
+    assert all(p.k > 0 for p in win.peaks)
+    assert "unfolded for 80 MHz" in win.status.text()
+    win.unfold_invert.setChecked(True)
+    # every line that has a direction goes to -k; on a harmonic or half-way
+    # (alias 0 or 40 MHz: 2 lines in 8 at 50 MHz steps) there is none to flip
+    has_sign = (np.abs(d) > 0) & (np.abs(d) < 40)
+    assert sorted(p.line for p in win.peaks if p.k < 0) == list(np.flatnonzero(has_sign))
+    # no frequency per line: said, not guessed
+    win.unfold_invert.setChecked(False)
+    win.f_src.setCurrentIndex(win.f_src.findData("constant"))
+    assert "unfold OFF" in win.status.text()

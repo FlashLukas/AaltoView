@@ -24,7 +24,9 @@ stripe:
     w_eff = w * D / (D - 2),   D(p) = 2 pi / (p (1 + 2 ln(1/p))),   p = d / w
 
 (w_eff -> w for a wide thin stripe; 5 % wider at d = 30 nm, w = 2 um). With
-"unpinned" the geometric width is used instead.
+"unpinned" the geometric width is used instead; with "none" there is no width
+mode at all (k_y = 0: an infinite film, or a stripe so wide it does not
+matter) -- w and n are then not used, and not fitted.
 
 The total wavevector is k^2 = kx^2 + ky^2, kx the measured one (its sign --
 which way the wave runs -- does not change f here). With the field at an angle
@@ -60,7 +62,9 @@ PARAMS = {
     "theta": ("deg", "field angle to the stripe axis (90 = Damon-Eshbach)", 90.0, False,
               -180.0, 180.0),
 }
-PINNING = ("guslienko", "unpinned")
+PINNING = ("guslienko", "unpinned", "none")
+#: the parameters that only exist through the width mode
+WIDTH_PARAMS = ("w", "n")
 
 
 def guslienko_width(w_um: float, d_nm: float) -> float:
@@ -81,7 +85,7 @@ def guslienko_width(w_um: float, d_nm: float) -> float:
 def width_wavevector(v: dict, pinning: str = "guslienko") -> float:
     """k_y (rad/um) of width mode n."""
     n, w = float(v["n"]), float(v["w"])
-    if n <= 0 or w <= 0:
+    if pinning == "none" or n <= 0 or w <= 0:
         return 0.0
     weff = guslienko_width(w, v["d"]) if pinning == "guslienko" else w
     return n * np.pi / weff
@@ -161,6 +165,8 @@ class Result:
         """(name, value, error, unit, meaning) for the results table."""
         out = []
         for n, p in PARAMS.items():
+            if self.pinning == "none" and n in WIDTH_PARAMS:
+                continue                  # no width mode: w and n play no part
             out.append((n, self.values[n], self.errors.get(n), p[0],
                         p[1] + ("" if self.vary.get(n) else "  (fixed)")))
         for n, (v, unit, meaning) in self.derived.items():
@@ -174,7 +180,7 @@ def _derived(v: dict, pinning: str) -> dict:
     try:
         lam = 2 * v["A"] * 1e-12 * MU0 / (v["Ms"] * 1e-3) ** 2
         out["l_ex"] = (np.sqrt(lam) * 1e9, "nm", "exchange length sqrt(2A / mu0 Ms^2)")
-        if v["w"] > 0 and v["n"] > 0:
+        if pinning != "none" and v["w"] > 0 and v["n"] > 0:
             weff = guslienko_width(v["w"], v["d"]) if pinning == "guslienko" else v["w"]
             out["w_eff"] = (weff, "um", f"effective width ({pinning})")
             out["k_y"] = (width_wavevector(v, pinning), "rad/um", "n pi / w_eff")
@@ -190,7 +196,8 @@ def fit(points: list[Point], specs: dict[str, Spec], pinning: str = "guslienko",
     """Least squares in f: model f(|k|, B) - measured f, over the points used."""
     from scipy.optimize import least_squares
     pts = [p for p in points if p.use and np.isfinite(p.k) and np.isfinite(p.f)]
-    names = [n for n in PARAMS if specs[n].vary]
+    names = [n for n in PARAMS if specs[n].vary
+             and not (pinning == "none" and n in WIDTH_PARAMS)]
     if not pts:
         raise ValueError("no points to fit -- find the peaks first")
     if len(pts) <= len(names):
