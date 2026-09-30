@@ -130,3 +130,26 @@ def test_ctrl_click_puts_a_peak_there(win, curves):
     assert e.setup.n_peaks == n + 1 and win.peaks.value() == n + 1
     assert e.start[f"p{n + 1}_center"].value == pytest.approx(x)
     assert "put at" in win.status.text()
+
+
+def test_without_the_reference_the_fit_misses(win, curves):
+    """docs/CASE_STUDY_FMR_PSSW.md step 2: the 200 mT sweep, 5 peaks, oscillator
+    + delay but NOT divided by the 800 mT line -- the ripple is as large as the
+    resonances and takes the peaks; divided, all five are within 2 MHz."""
+    win.add_curves(curves)
+    e = win.entries[7]
+    assert e.curve.held["field"][0] == 200.0
+    win.curve_list.setCurrentItem(win.curve_list.topLevelItem(7))
+    win.peaks.setValue(5)
+    truth = sorted(_truth(200.0).values())
+
+    def miss():
+        got = sorted(e.result.values[f"p{k}_center"] for k in range(1, 6))
+        return max(abs(a - b) for a, b in zip(got, truth))
+
+    win.ref_combo.setCurrentIndex(0)                    # none
+    win.fit()
+    assert miss() > 0.1 or M.suspicious(e.result)
+    win.ref_combo.setCurrentIndex(win.ref_combo.findText(curves[-1].label))
+    win.fit()
+    assert miss() < 2e-3 and not M.suspicious(e.result)

@@ -1,4 +1,4 @@
-"""app.py -- the FMR fit window. The maths is in model.py; this is the widgets.
+"""app.py -- the VNA-FMR fit window. The maths is in model.py; this is the widgets.
 
     +-----------------------+------------------------------------------------+
     | CURVES (from the      |  data + fit  (drag the shaded band = range)    |
@@ -28,7 +28,7 @@ from PySide6 import QtCore, QtGui, QtWidgets
 
 from aaltoview.apps.theme import C
 from aaltoview.apps.viewer import TAB10, _float, _plain_axes
-from aaltoview.export import Curve, axis_title, save_figure
+from aaltoview.export import Curve, MapData, axis_title, map_to_curves, save_figure
 
 from . import model as M
 from .dispersion import unit_kind
@@ -119,7 +119,7 @@ class FitWindow(QtWidgets.QWidget):
         outer = QtWidgets.QVBoxLayout(self)
         outer.setContentsMargins(14, 12, 14, 12)
         outer.setSpacing(8)
-        title = QtWidgets.QLabel("FMR FIT"); title.setObjectName("title")
+        title = QtWidgets.QLabel("VNA-FMR FIT"); title.setObjectName("title")
         outer.addWidget(title)
         # two stages: each curve's resonance, then all resonances together
         self.tabs = QtWidgets.QTabWidget()
@@ -366,6 +366,46 @@ class FitWindow(QtWidgets.QWidget):
                                   " font-size:11px;")
         self.status.setText(text)
 
+    # ── a batch of fits that keeps the window alive ─────────────────────────
+    # 174 angle sweeps x 0.24 s = 42 s in one block: Windows called the window
+    # "Not Responding" and nothing could stop it (2026-09-30). Now one curve at
+    # a time, its row updated, events handled in between, and a Stop button.
+    _batch = False
+
+    def _batch_begin(self, stop_buttons):
+        self._batch, self._stop = True, False
+        self._set_enabled(False)
+        self.curve_list.setEnabled(False)       # the list switches the curve on screen
+        self._stop_buttons = [(b, b.text(), b.isEnabled()) for b in stop_buttons]
+        for b in stop_buttons:
+            b.setText("Stop")
+            b.setEnabled(True)
+        QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.BusyCursor)
+
+    def _batch_step(self, k: int, n: int, e: "Entry", what: str = "fitting") -> bool:
+        """After curve k of n: its row, the status, the events. False = Stop pressed."""
+        self._update_row(e)
+        self.say(f"{what} {k} / {n}: {e.curve.label}   (Stop to stop here)")
+        QtWidgets.QApplication.processEvents()
+        return not self._stop
+
+    def _batch_end(self):
+        QtWidgets.QApplication.restoreOverrideCursor()
+        for b, text, on in self._stop_buttons:
+            b.setText(text)
+            b.setEnabled(on)
+        self._batch = False
+        self.curve_list.setEnabled(True)
+        self._set_enabled(True)
+        self._selection_changed()
+
+    def request_stop(self) -> bool:
+        """Stop pressed (the batch's button): True if a batch was running."""
+        if self._batch:
+            self._stop = True
+            return True
+        return False
+
     def _set_enabled(self, on: bool):
         for w in (self.guess_btn, self.fit_btn, self.fit_all_btn, self.full_btn, self.table,
                   self.peaks, self.mode, self.baseline, self.hand, self.lineshape, self.delay,
@@ -401,6 +441,17 @@ class FitWindow(QtWidgets.QWidget):
         if notes and self.template is None:
             msg += "; frequency sweeps: " + ", ".join(sorted(notes))
         self.say(msg)
+
+    def add_maps(self, maps: list[MapData]):
+        """A whole map from the viewer's Map tab: one sweep per row (per value of
+        the map's Y), along its X, each held at its Y value -- so a field x
+        frequency map with X = frequency arrives as one frequency sweep per field,
+        ready for the Dispersion tab. Choose X in the viewer before sending."""
+        curves = [c for m in maps for c in map_to_curves(m)]
+        self.add_curves(curves)
+        m = maps[0]
+        self.say(f"received a map ({m.label}): {len(curves)} sweeps along {m.x_name}, "
+                 f"one per {m.y_name}")
 
     def targets(self) -> list[Entry]:
         """What Fit all works on: the selected curves when there are several,
@@ -773,6 +824,8 @@ class FitWindow(QtWidgets.QWidget):
                  + f"{res.message}  (χ²_red = {res.redchi:.4g}{hand})", error=bool(warn))
 
     def fit_all(self):
+        if self.request_stop():
+            return
         cur = self.current()
         if cur is None:
             return
@@ -782,49 +835,70 @@ class FitWindow(QtWidgets.QWidget):
         # the reference sweep is not fitted with itself taken out of it
         targets = [e for e in self.targets() if ref is None or e is not ref[0]]
         self._remember(cur)
-        for e in targets:
-            e.reference = ref
-            e.located = None
-            e.touched = True
-            mode = template.mode if (template.mode == "real" or e.curve.z is not None) else "real"
-            # the model is shared, the RANGE is not: each curve keeps its own band
-            # or gets the carried one around its own peak (never cur's field values)
-            e.setup = M.Setup(**{**template.__dict__, "mode": mode,
-                                 "xmin": e.setup.xmin, "xmax": e.setup.xmax})
-            self._apply_rule(e)
-            try:
-                start = cur.start if e is cur else None
-                self._fit_entry(e, start)
-            except Exception as exc:
-                e.result = None
-                bad.append(f"{e.curve.label}: {exc}")
+        done = []
+        self._batch_begin([self.fit_all_btn])
+        try:
+            for k, e in enumerate(targets, 1):
+                if not self._fit_one_of_all(e, cur, template, ref, bad):
+                    continue
+                done.append(e)
+                if not self._batch_step(k, len(targets), e):
+                    break
+        finally:
+            self._batch_end()
+        stopped = len(done) < len(targets) and self._stop
+        targets = done
         self._after_fit(targets)
         n = len(targets) - len(bad)
         check = [e.curve.label for e in targets if e.result and M.suspicious(e.result)]
         msg = f"fitted {n} of {len(targets)}"
-        if len(targets) < len(self.entries):
+        if stopped:
+            msg = f"STOPPED: fitted {n} (the rest not touched)"
+        elif len(targets) < len(self.entries):
             msg += " selected"
         if check:
-            msg += f"; check {', '.join(check)} (marked ⚠)"
+            msg += f"; check {', '.join(check[:6])}{' ...' if len(check) > 6 else ''} (marked ⚠)"
         if bad:
-            msg += " -- " + "; ".join(bad)
-        self.say(msg, error=bool(bad or check))
+            msg += " -- " + "; ".join(bad[:3])
+        self.say(msg, error=bool(bad or check or stopped))
+
+    def _fit_one_of_all(self, e, cur, template, ref, bad) -> bool:
+        """One curve of Fit all, with the model of the one on screen."""
+        e.reference = ref
+        e.located = None
+        e.touched = True
+        mode = template.mode if (template.mode == "real" or e.curve.z is not None) else "real"
+        # the model is shared, the RANGE is not: each curve keeps its own band
+        # or gets the carried one around its own peak (never cur's field values)
+        e.setup = M.Setup(**{**template.__dict__, "mode": mode,
+                             "xmin": e.setup.xmin, "xmax": e.setup.xmax})
+        self._apply_rule(e)
+        try:
+            start = cur.start if e is cur else None
+            self._fit_entry(e, start)
+        except Exception as exc:
+            e.result = None
+            bad.append(f"{e.curve.label}: {exc}")
+        return True
+
+    def _update_row(self, e):
+        """The curve list's row of one entry: its fit in one line."""
+        it = self.curve_list.topLevelItem(self.entries.index(e))
+        r = e.result
+        if r is None:
+            it.setText(1, "failed")
+            return
+        w, we = r.fwhm(1)
+        warn = M.suspicious(r)
+        it.setText(1, ("⚠ check  " if warn else "")
+                   + f"x0 = {M.fmt_pm(r.values['p1_center'], r.errors['p1_center'])}, "
+                     f"FWHM = {M.fmt_pm(w, we)} {e.curve.x_unit}")
+        it.setToolTip(1, warn or f"χ²_red = {r.redchi:.4g}")
+        it.setForeground(1, QtGui.QColor(C["danger"] if warn else C["text"]))
 
     def _after_fit(self, entries):
         for e in entries:
-            i = self.entries.index(e)
-            it = self.curve_list.topLevelItem(i)
-            r = e.result
-            if r is None:
-                it.setText(1, "failed")
-                continue
-            w, we = r.fwhm(1)
-            warn = M.suspicious(r)
-            it.setText(1, ("⚠ check  " if warn else "")
-                       + f"x0 = {M.fmt_pm(r.values['p1_center'], r.errors['p1_center'])}, "
-                         f"FWHM = {M.fmt_pm(w, we)} {e.curve.x_unit}")
-            it.setToolTip(1, warn or f"χ²_red = {r.redchi:.4g}")
-            it.setForeground(1, QtGui.QColor(C["danger"] if warn else C["text"]))
+            self._update_row(e)
         self.curve_list.resizeColumnToContents(1)
         self._fill_table()
         self._redraw()

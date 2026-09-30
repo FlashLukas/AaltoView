@@ -159,8 +159,95 @@ def test_a_dropped_module_folder_is_found(tmp_path, monkeypatch):
 
 def test_the_fmr_fit_module_in_this_repository_is_found():
     m = next((m for m in AL.installed() if m.key == "fmr_fit"), None)
-    assert m is not None and m.folder.name == "fmr-fit"
+    assert m is not None and m.folder.name == "vna-fmr-fit"
     cmd, _ = AL.launch_command(m)
     assert cmd[-2:] == ["-m", "fmr_fit"]
     if "uv" in Path(cmd[0]).stem:          # uv run: installs a new module's packages first
         assert "--all-packages" in cmd
+
+
+# ─────────────────────────────── whole maps ───────────────────────────────────
+
+MAP_INFO = {**INFO, "accepts": ["curves", "maps"]}
+
+
+def test_a_map_keeps_its_complex_values_and_its_reference():
+    ds = _complex_ds()
+    sel = E.Selection("s21", x="field", y="rf_freq", part="abs")
+    m = E.make_map_data(ds, sel, E.MapStyle(ref="row", ref_i=0, norm="rows", log=True), "x.nc")
+    z = E.detector(ds, "s21").values
+    # divided by the 6 GHz row, on the complex values; norm and log NOT applied
+    np.testing.assert_allclose(m.z[1, 5], z[1, 5] / z[0, 5])
+    assert m.values[1, 5] == pytest.approx(abs(z[1, 5] / z[0, 5]))
+    assert np.isnan(m.values[1, 3])                    # a hole stays a hole
+    assert m.ref == {"mode": "row", "op": "divide", "i": 0}
+    assert "÷ rf_freq = 6 GHz" in m.z_name and m.z_unit == ""
+    back = AL.map_from_dict(__import__("json").loads(
+        __import__("json").dumps(AL.map_to_dict(m))))
+    assert back.values.shape == (2, 11) and np.isnan(back.z[1, 3])
+    np.testing.assert_allclose(back.z[1, 5], m.z[1, 5])
+    assert (back.x_name, back.y_name, back.y_unit, back.ref) == ("field", "rf_freq", "GHz", m.ref)
+
+
+def test_a_map_becomes_one_curve_per_row_held_at_its_y():
+    ds = _complex_ds()
+    m = E.make_map_data(ds, E.Selection("s21", x="field", y="rf_freq", part="real"),
+                        source="x.nc")
+    curves = E.map_to_curves(m)
+    assert [c.held for c in curves] == [{"rf_freq": (6.0, "GHz")}, {"rf_freq": (8.0, "GHz")}]
+    assert curves[1].label == "rf_freq = 8 GHz"
+    # the same numbers as a curve made from the file at that frequency
+    c = E.make_curve(ds, E.Selection("s21", x="field", slices={"rf_freq": Slice("at", 1)},
+                                     part="real"), "x.nc")
+    np.testing.assert_array_equal(curves[1].y[np.isfinite(c.y)], c.y[np.isfinite(c.y)])
+    np.testing.assert_array_equal(curves[1].z[np.isfinite(c.z)], c.z[np.isfinite(c.z)])
+    assert curves[1].selection.slices["rf_freq"].i0 == 1 and curves[1].selection.y is None
+
+
+def test_maps_go_as_maps_or_as_curves_as_the_module_asks():
+    got_maps, got_curves = [], []
+    lis = AL.Listener(MAP_INFO, on_curves=got_curves.extend, on_maps=got_maps.extend)
+    lis.start()
+    plain = AL.Listener({**INFO, "key": "curves_only"}, on_curves=got_curves.extend)
+    plain.start()
+    m = E.make_map_data(_complex_ds(), E.Selection("s21", x="field", y="rf_freq"))
+    try:
+        run = {r.key: r for r in AL.running()}
+        assert "maps" in run["test_mod"].accepts and run["curves_only"].accepts == ("curves",)
+        AL.send_maps(lis.port, [m], run["test_mod"].accepts)
+        assert len(got_maps) == 1 and got_maps[0].z.shape == (2, 11) and not got_curves
+        AL.send_maps(plain.port, [m], run["curves_only"].accepts)
+        assert len(got_curves) == 2                     # one per row
+        # a module that says "maps" but has no handler: rows through on_curves
+        got_curves.clear()
+        lis.on_maps = None
+        AL.send_maps(lis.port, [m])
+        assert len(got_curves) == 2
+    finally:
+        lis.stop()
+        plain.stop()
+
+
+def test_the_map_tab_sends_the_whole_map(tmp_path):
+    pytest.importorskip("PySide6")
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PySide6 import QtWidgets
+    from aaltoview.apps import viewer as VW
+    VW.configure_pyqtgraph()
+    QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    got = []
+    lis = AL.Listener(MAP_INFO, on_curves=got.extend, on_maps=got.extend)
+    lis.start()
+    w = VW.ViewerWidget()
+    try:
+        w.set_dataset(_complex_ds(), tmp_path / "s.nc")
+        menu = w.map.exports.analysis_menu
+        menu._fill()
+        sends = [a for a in menu.actions() if a.text() == "Send to Test module"]
+        sends[0].trigger()
+        assert len(got) == 1 and isinstance(got[0], E.MapData)
+        assert got[0].values.shape == (w.map._map.y.size, w.map._map.x.size)
+        assert "sent 1 map to Test module" in w.map.status.text()
+    finally:
+        lis.stop()
+        w.close()

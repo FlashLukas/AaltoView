@@ -1,10 +1,10 @@
-# FMR fit
+# VNA-FMR fit
 
 An AaltoView analysis module (drop-in: this folder in `AnalysisModules/`). It fits ferromagnetic resonances on 1-D curves
 measured by direct detection (a VNA's S21; not the derivative lineshape of a
 field-modulated lock-in).
 
-![FMR fit with the simulated field sweeps](../../docs/fmr-fit.png)
+![VNA-FMR fit with the simulated field sweeps](../../docs/fmr-fit.png)
 
 ## The model
 
@@ -34,11 +34,13 @@ phase. On *auto*, both are tried and the better one is kept.
 
 ## Use
 
-1. In AaltoView, 1D plots: add the sweeps, then **Analysis → Start FMR fit
-   and send** (or **Send to FMR fit** if it is already open).
+1. In AaltoView, 1D plots: add the sweeps, then **Analysis → Start VNA-FMR fit
+   and send** (or **Send to VNA-FMR fit** if it is already open).
 2. Each curve arrives with guessed start values (dashed line).
 3. **Fit** fits the curve on screen. **Fit all** fits every curve with the same
-   model.
+   model, one at a time: each row fills in as it is fitted, and the button reads
+   **Stop** meanwhile (about 0.25 s per 4096-point sweep, so 174 sweeps take a
+   minute). **Predict + fit the others** works the same way.
 4. In the parameter table you can type a start value, tick **Fixed**, or set
    **Min/Max**. Drag the shaded band on the plot to fit only part of the sweep.
 5. **Peaks** > 1 is for the Kittel mode plus standing spin waves. A new peak is
@@ -201,7 +203,9 @@ is missing from a sweep. Instead:
    dispersion. Curves fitted by hand are never replaced.
 
 On the lab-style YIG sweeps, 3 hand-fitted sweeps are enough: all 12 are
-predicted within 0.003 GHz, and A, M_eff and γ come back exactly.
+predicted within 0.003 GHz, and A, M_eff and γ come back exactly. Step by step,
+with screenshots and the background subtraction:
+[the case study](../../docs/CASE_STUDY_FMR_PSSW.md).
 
 ## Working through a series
 

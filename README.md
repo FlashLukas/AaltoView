@@ -6,9 +6,14 @@ A data viewer for **time-resolved MOKE and FMR measurements** (Aalto University,
 NanoSpin group), the Python successor of the LabVIEW **AaltoView**, whose name it carries again
 (it was `trmoke-dataviewer` until 2026-09-24). Open a scan of
 any number of dimensions, look at it as a map or as overlaid curves, average what
-you do not need, and send the result to a figure, a text file, **Origin** or a
-**Jupyter notebook**. It reads the `.nc` files the AaltoFlow scan engine writes and
-needs no instruments.
+you do not need, take a background out (÷ or − a reference line), and send the
+result to a figure, a text file, **Origin** or a **Jupyter notebook**, or into an
+**analysis module**. **VNA-FMR fit** fits the Kittel mode and standing spin waves
+in field or VNA frequency sweeps, then fits the dispersion for γ, M_eff,
+anisotropy, the exchange stiffness and damping. **Spin-wave FFT** transforms
+every line of a position × frequency map into k-space, finds the wavevectors
+and fits a stripe's dispersion (Kalinikos–Slavin, Guslienko pinning). It reads
+the `.nc` files the AaltoFlow scan engine writes and needs no instruments.
 
 ![a 3-D FMR cube: field against frequency at 2 um from the antenna](docs/map.png)
 
@@ -46,7 +51,7 @@ simulated data (see [Try it without lab data](#try-it-without-lab-data)).*
   | Save data | `.dat` / `.csv` with Long Name / Units / Comments header rows; a map as a matrix or XYZ columns |
   | Send to Origin | into a running Origin (or starts one): worksheet + graph, or matrix + colour map |
   | Notebook | a Jupyter notebook that **recomputes** the view from the `.nc` files |
-  | Analysis | (1D plots) the curves into an **analysis module**: see below |
+  | Analysis | the curves (1D plots) or the whole map (Map) into an **analysis module**: see below |
 
 ![spectra from two measurements overlaid](docs/curves.png)
 
@@ -71,12 +76,13 @@ a complex signal are taken coherently.*
 ## Analysis modules
 
 Fits and other analyses are separate programs that the viewer sends curves to
-(**1D plots → Analysis**). Several can be open at once, and a busy or crashed
-module never takes the viewer down. A module is a folder in
+(**1D plots → Analysis**) or whole maps (**Map → Analysis**: the map on
+screen, reference applied, complex values kept). Several can be open at once,
+and a busy or crashed module never takes the viewer down. A module is a folder in
 **`AnalysisModules/`**: drop one in and the viewer lists it. Its packages are
 installed the first time it starts.
 
-- **FMR fit** ([AnalysisModules/fmr-fit](AnalysisModules/fmr-fit/README.md)): complex
+- **VNA-FMR fit** ([AnalysisModules/vna-fmr-fit](AnalysisModules/vna-fmr-fit/README.md)): complex
   Lorentzian for VNA data. It gives the resonance position, the linewidth
   (HWHM and FWHM, with 1σ errors), the amplitude and the mixing phase. It fits
   Re and Im together, has a fit range, several peaks, and fixed or bounded
@@ -84,13 +90,42 @@ installed the first time it starts.
   (`.csv`, clipboard, Origin). Its **Dispersion** tab then fits all the
   resonances with one magnetic model: γ, M_eff, in-plane uniaxial, 4- and
   6-fold anisotropy, PSSW exchange (A) and damping (α, ΔH0). It handles field
-  sweeps at any angle, frequency sweeps, and angle series.
+  sweeps at any angle, frequency sweeps, and angle series. A map sent to it
+  arrives as one sweep per row.
+- **Spin-wave FFT** ([AnalysisModules/spinwave-fft](AnalysisModules/spinwave-fft/README.md)):
+  - the spatial FFT of every line of a map (e.g. lock-in vs pos_x × rf_freq),
+    coherent on complex data, so waves travelling towards +x and −x are
+    separated;
+  - a choice of window, offset removal and zero-padding, with k in rad/µm
+    or 1/µm;
+  - the peaks of every line, exported as a table;
+  - the dispersion fit, Kalinikos–Slavin for a stripe with Guslienko's
+    effective width: μ0Ms, A, thickness, width, field and angle, each fitted
+    or held.
 
-![FMR fit: four field sweeps fitted](docs/fmr-fit.png)
+![Spin-wave FFT: every frequency line in k-space, peaks and the fitted dispersion](docs/sw-fft.png)
+
+*The simulated permalloy stripe, sent from the Map tab. The peaks lie on the
+stripe's dispersion, and the fit gives back μ0Ms and the width; the tests check
+that against the numbers the data was made from.*
+
+![VNA-FMR fit: four field sweeps fitted](docs/fmr-fit.png)
 
 *The simulated field sweeps at 6–12 GHz, sent from 1D plots and fitted with
 **Fit all**. The resonance fields and widths agree with the Kittel formula the
 data was made from; the tests check that.*
+
+**Case study:** [FMR with standing spin waves, background removed, three
+fits → all](docs/CASE_STUDY_FMR_PSSW.md). It works through 200 nm YIG measured
+with a VNA:
+
+- divide by a reference line to remove the cables;
+- fit the uniform mode + PSSW 1–4 on three sweeps by hand;
+- let the dispersion predict, bound and fit the other nine;
+- end with one exchange stiffness.
+
+It is reproduced by `tools/case_study_fmr_pssw.py`, and every number is
+checked against the truth the data was made from.
 
 Writing a new module: [docs/ANALYSIS_MODULES.md](docs/ANALYSIS_MODULES.md)
 (`tools/new_analysis_module.py` sets one up).
@@ -116,7 +151,7 @@ directory, if the suite is installed on the same PC).
 ## Try it without lab data
 
 ```bash
-uv run python tools/make_demo_data.py demo_data     # four simulated measurements
+uv run python tools/make_demo_data.py demo_data     # ten simulated measurements
 uv run aaltoview --folder demo_data
 ```
 
@@ -124,8 +159,15 @@ The simulated measurements are a permalloy-like film: the Kittel mode
 f = γ/2π·√(B(B + μ0Ms)), a weaker perpendicular standing spin wave, a linewidth
 growing with frequency, detection phase and noise. They are a field × frequency
 map, a distance × field × frequency cube, a spin-wave image at 8 GHz for three
-fields, and field sweeps at four frequencies. `tools/render_docs.py` regenerates
-them and every screenshot above.
+fields, and field sweeps at four frequencies. Further files cover the
+analysis modules:
+- an anisotropic film measured at 36 in-plane angles;
+- VNA sweeps with a cable background;
+- 200 nm YIG with four standing spin waves, both as field sweeps and as VNA
+  sweeps;
+- a spin-wave line scan along a permalloy stripe.
+
+`tools/render_docs.py` regenerates them and every screenshot above.
 
 ## Without the window
 
@@ -176,6 +218,7 @@ autocorrection.
 ```bash
 uv run pytest -q                              # viewer + modules, offline, GUI offscreen
 uv run python tools/render_docs.py            # refresh the screenshots in docs/
+uv run --all-packages python tools/case_study_fmr_pssw.py   # and the case study's
 $env:AALTOVIEW_TEST_ORIGIN = "1"; uv run pytest -q -k origin    # also pushes into Origin
 ```
 

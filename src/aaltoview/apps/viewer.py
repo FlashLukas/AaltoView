@@ -436,6 +436,15 @@ class ExportBar(QtWidgets.QWidget):
             b.setMenu(self.analysis_menu)
             h.addWidget(b)
             self.buttons["Analysis"] = b
+        elif hasattr(panel, "analysis_maps"):
+            b = QtWidgets.QPushButton("Analysis")
+            b.setToolTip("Send the whole map to an analysis module: as a map to one that\n"
+                         "takes maps (FFT, ...), as one curve per row to one that takes\n"
+                         "curves. The reference goes with it; the colour styling does not.")
+            self.analysis_menu = AnalysisMenu(b, panel.analysis_maps, panel.say, kind="maps")
+            b.setMenu(self.analysis_menu)
+            h.addWidget(b)
+            self.buttons["Analysis"] = b
         h.addStretch(1)
 
 
@@ -771,6 +780,17 @@ class MapPanel(_Panel):
     def set_dataset(self, ds):
         self.controls.set_dataset(ds)
         self.refresh()
+
+    def analysis_maps(self) -> list[E.MapData]:
+        """The map on screen, for an analysis module (reference applied; the
+        colour styling -- per-line normalisation, log -- left out)."""
+        ds = self.host.ds
+        sel = self.controls.selection()
+        if ds is None or sel is None:
+            raise ValueError("no map to send -- open a measurement first")
+        if sel.y is None or sel.y == sel.x:
+            raise ValueError("choose two different dimensions for X and Y")
+        return [E.make_map_data(ds, sel, self.map_style(), self.host.path)]
 
     def current_map(self) -> tuple[E.Map, V.Reduced] | None:
         ds = self.host.ds

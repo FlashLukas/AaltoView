@@ -90,3 +90,21 @@ def test_the_lab_workflow_gives_the_exchange_stiffness(win, curves):
     assert v["Meff"] == pytest.approx(DEMO.YIG["Ms"], rel=1e-3)
     assert v["gamma"] == pytest.approx(DEMO.G, rel=1e-3)
     assert abs(tab.damp.alpha - DEMO.YIG["alpha"]) < 4 * tab.damp.alpha_err
+
+
+def test_a_whole_map_arrives_as_one_sweep_per_field(win, tmp_path_factory):
+    """Map tab -> Analysis: the field x frequency map, X = rf_freq, as one
+    sweep per field, each held at its field -- the same curves 1D plots sends."""
+    out = tmp_path_factory.mktemp("demo_map")
+    DEMO.main([str(out)])
+    path = next(out.glob("*/*_yig_200nm_vna.nc"))
+    ds = load(path).load()
+    m = E.make_map_data(ds, E.Selection("s21", x="rf_freq", y="field"), source=path)
+    win.add_maps([m])
+    assert len(win.entries) == 13
+    c = win.entries[4].curve
+    assert c.held["field"] == (125.0, "mT") and c.z is not None
+    ref = E.curves_along(ds, E.Selection("s21", x="rf_freq"), "field", [4], path)[0]
+    np.testing.assert_array_equal(c.z, ref.z)
+    assert win.entries[0].setup.lineshape == "oscillator"      # still a VNA sweep
+    assert "received a map" in win.status.text() and "one per field" in win.status.text()

@@ -1,0 +1,26 @@
+[project]
+name = "aaltoview-vna-fmr-fit"
+version = "0.1.0"
+description = "AaltoView analysis module: fit FMR resonances (complex Lorentzian, VNA), then Kittel / anisotropy / damping"
+license = "MIT"
+requires-python = ">=3.11"
+dependencies = [
+    "aaltoview[gui]",
+    "lmfit>=1.3",        # parameters with bounds / fixed values / error bars, on SciPy
+]
+
+# AaltoView finds this module through module.toml (next to this file), not
+# through anything installed: drop the folder into AnalysisModules/.
+
+[project.scripts]
+aaltoview-vna-fmr-fit = "fmr_fit.__main__:main"
+
+[tool.uv.sources]
+aaltoview = { workspace = true }
+
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]

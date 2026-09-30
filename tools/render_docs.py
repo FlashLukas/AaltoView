@@ -189,8 +189,8 @@ def pose_map_reference(v):
 
 
 def shot_fit(app, name: str, theme_name: str):
-    """The FMR fit module (AnalysisModules/fmr-fit) with the demo field sweeps, all
-    fitted -- what arrives after 1D plots -> Analysis > FMR fit."""
+    """The VNA-FMR fit module (AnalysisModules/vna-fmr-fit) with the demo field sweeps, all
+    fitted -- what arrives after 1D plots -> Analysis > VNA-FMR fit."""
     try:
         from fmr_fit.app import FitWindow
     except ImportError:
@@ -206,7 +206,7 @@ def shot_fit(app, name: str, theme_name: str):
     ds = load(path).load()
     curves = E.curves_along(ds, E.Selection("lockin", x="field"), "rf_freq", range(4), path)
     win = FitWindow()
-    win.setWindowTitle("FMR fit")
+    win.setWindowTitle("VNA-FMR fit")
     win.resize(*SIZE)
     win.show()
     pump(app, 0.3)
@@ -242,7 +242,7 @@ def shot_dispersion(app, name: str, theme_name: str):
     ds = load(path).load()
     curves = E.curves_along(ds, E.Selection("s21", x="field"), "phi_H", range(36), path)
     win = FitWindow()
-    win.setWindowTitle("FMR fit")
+    win.setWindowTitle("VNA-FMR fit")
     win.resize(*SIZE)
     win.show()
     pump(app, 0.3)
@@ -282,7 +282,7 @@ def shot_yig(app, name: str, theme_name: str):
     curves = E.curves_along(ds, E.Selection("lockin", x="field"), "rf_freq",
                             range(ds.sizes["rf_freq"]), path)
     win = FitWindow()
-    win.setWindowTitle("FMR fit")
+    win.setWindowTitle("VNA-FMR fit")
     win.resize(*SIZE)
     win.show()
     pump(app, 0.3)
@@ -306,6 +306,73 @@ def shot_yig(app, name: str, theme_name: str):
     win.close()
     win.deleteLater()
     pump(app, 0.2)
+
+
+def shot_swfft(app, name: str, theme_name: str, tab: str = "FFT"):
+    """The Spin-wave FFT module with the demo permalloy stripe (file 10), sent
+    from the Map tab: FFT per line, peaks, the dispersion fitted (field typed in:
+    it is only in the file's comment)."""
+    try:
+        from sw_fft.app import FFTWindow
+    except ImportError:
+        print("  (sw_fft not installed: uv sync --all-packages --extra gui) -- skipped")
+        return
+    from aaltoview import export as E
+    from aaltoview.apps import viewer as VW
+    from aaltoview.data import load
+    from aaltoview.view import Slice
+    theme.set_theme(theme_name)
+    VW.configure_pyqtgraph()
+    theme.apply(app)
+    path = next(DATA.glob("*/*_py_stripe_trmoke.nc"))
+    ds = load(path).load()
+    m = E.make_map_data(ds, E.Selection("lockin", x="pos_x", y="rf_freq",
+                                        slices={"pos_y": Slice("at", 0)}), source=path)
+    win = FFTWindow()
+    win.setWindowTitle("Spin-wave FFT")
+    win.resize(*SIZE)
+    win.show()
+    pump(app, 0.3)
+    win.add_maps([m])
+    win.side.setCurrentIndex(win.side.findData("positive"))
+    win.kmin.setText("0.5")
+    win.find_peaks()
+    win.b_const.setText("20")
+    win._sources_changed()
+    for n in ("A", "d", "w"):
+        win.specs[n].value = make_demo_data.STRIPE[n]
+    win.specs["Ms"].value, win.specs["Ms"].vary = 700.0, True
+    win.specs["w"].vary = True
+    win._fill_params()
+    win.fit()
+    win.line = 40                                     # 7 GHz
+    win._draw_line()
+    win.mplot.setXRange(-2, 10, padding=0)
+    if tab != "FFT":
+        win.tabs.setCurrentIndex(1)
+    pin_font(app)
+    win.resize(*SIZE)
+    pump(app, 1.5)
+    out = DOCS / f"{name}.png"
+    win.grab().save(str(out))
+    print(f"  {out.relative_to(HERE.parent)}")
+    win.close()
+    win.deleteLater()
+    pump(app, 0.2)
+
+
+def pose_stripe_map(v):
+    """The stripe's raw map in the viewer: Re lockin, pos_x x rf_freq -- what goes
+    to the Spin-wave FFT module with Map -> Analysis."""
+    select_file(v, "101500_py_stripe_trmoke")
+    m = v.map
+    m.controls.part_combo.setCurrentText("Re z")
+    m.controls.x_combo.setCurrentText("pos_x")
+    m.controls.y_combo.setCurrentText("rf_freq")
+    m.cmap_combo.setCurrentText("red-blue")
+    m.symmetric.setChecked(True)
+    m.refresh()
+    v.tabs.setCurrentWidget(m)
 
 
 def main() -> int:
@@ -332,6 +399,10 @@ def main() -> int:
     shot_dispersion(app, "fmr-dispersion", "dark")
     shot_dispersion(app, "fmr-dispersion-light", "light")
     shot_yig(app, "fmr-yig-pssw", "dark")
+    shot(app, "stripe-map", "dark", pose_stripe_map)
+    shot_swfft(app, "sw-fft", "dark")
+    shot_swfft(app, "sw-fft-light", "light")
+    shot_swfft(app, "sw-fft-dispersion", "dark", tab="Dispersion")
     return 0
 
 

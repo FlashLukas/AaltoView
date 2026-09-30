@@ -2,11 +2,13 @@
 
 AaltoView shows data; **analysis modules** do something with it: a fit, a
 correction, a model. Each module is a separate program with its own window.
-The viewer sends curves to it from **1D plots → Analysis**.
+The viewer sends curves to it from **1D plots → Analysis**, and whole maps from
+**Map → Analysis**.
 
 ```
-AaltoView ──"Analysis" menu──►  FMR fit      (AnalysisModules/fmr-fit)
-          ──────────────────►  <your module> (AnalysisModules/<name>)
+AaltoView ──"Analysis" menu──►  VNA-FMR fit    (AnalysisModules/vna-fmr-fit)
+          ──────────────────►  Spin-wave FFT  (AnalysisModules/spinwave-fft)
+          ──────────────────►  <your module>  (AnalysisModules/<name>)
 ```
 
 ## Drop in, and it is there
@@ -70,6 +72,7 @@ The requests are:
 |---|---|
 | `describe` | `{"ok": true, "key", "name", "title", "description", "accepts", "protocol", "pid"}` |
 | `add_curves`, with `"curves": [...]` | `{"ok": true, "n": <number received>}` |
+| `add_maps`, with `"maps": [...]` | `{"ok": true, "n": <number received>}` |
 | `shutdown` | `{"ok": true}`, then the window closes |
 
 An error is `{"ok": false, "error": "..."}`. The module always replies at once;
@@ -97,6 +100,35 @@ the viewer:
 Holes (NaN) from a running or aborted scan stay holes, so NaN-aware code is a
 must.
 
+## What a map carries
+
+**Map → Analysis** sends the map on screen as an `aaltoview.export.MapData`.
+The reference is applied; the colour styling (per-line normalisation, log,
+limits) is not.
+
+| Field | Meaning |
+|---|---|
+| `x`, `y` | the two axes; `values[i, :]` is the line at `y[i]`, along x |
+| `values` | the part that was on screen (\|z\|, Re, Im, arg), after the reference |
+| `z` | the **complex** map when the detector is complex, otherwise `None` |
+| `x_name`, `x_unit`, `y_name`, `y_unit`, `z_name`, `z_unit` | names and units |
+| `label`, `source`, `selection`, `held` | as for a curve (`held`: the dims other than x and y) |
+| `ref` | the reference applied: `{"mode", "op", "i"}`, or `None` |
+
+How a map arrives depends on the module:
+
+- **`accepts = ["curves", "maps"]` and an `add_maps(list[MapData])` method:**
+  it arrives as a map (the Spin-wave FFT module).
+- **`accepts` has "maps" but there is no `add_maps` method:** `run_module()`
+  hands it to `add_curves` as one curve per row, each held at its y value
+  (`export.map_to_curves`).
+- **The module takes only curves:** the viewer sends those same curves, and its
+  menu says "(as curves, one per row)".
+
+The VNA-FMR fit module accepts maps this way. A field × frequency map with
+X = `rf_freq` becomes one frequency sweep per field, ready for its Dispersion
+tab.
+
 ## Writing a new module
 
 ```bash
@@ -109,9 +141,10 @@ receives and plots curves. Then:
 
 1. Put the maths in `model.py`, with no Qt, and test it (`tests/`). Check the
    fit against numbers you KNOW, such as simulated data with known parameters
-   (see `AnalysisModules/fmr-fit/tests/test_fmr_model.py`).
+   (see `AnalysisModules/vna-fmr-fit/tests/test_fmr_model.py`).
 2. Build the window in `app.py`. The one rule is that
-   `add_curves(list[Curve])` exists. `run_module()` (in
+   `add_curves(list[Curve])` exists (add `add_maps(list[MapData])` and
+   `"maps"` in `accepts` to take whole maps). `run_module()` (in
    `aaltoview/apps/analysis.py`) handles the theme, the icon, the listener,
    and delivering curves on the GUI thread.
 3. For results, reuse the viewer's exports: `aaltoview.export.write_*`,

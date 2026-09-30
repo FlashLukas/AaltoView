@@ -26,17 +26,22 @@ class AnalysisMenu(QtWidgets.QMenu):
     """Built fresh each time it opens, so it shows what is running NOW.
 
     get_curves() -> list[Curve]   what to send (raises ValueError with a message
-                                  for the status line when there is nothing)
+                                  for the status line when there is nothing);
+                                  with kind="maps": list[MapData]
     say(text, error)              the panel's status line
+
+    Maps go to every module: as maps to one whose module.toml accepts them,
+    as one curve per row to one that takes only curves.
     """
 
     #: how long a started module gets to announce itself. Generous: the FIRST
     #: start of a newly dropped module installs its packages (uv run)
     START_TIMEOUT_S = 180.0
 
-    def __init__(self, parent, get_curves, say):
+    def __init__(self, parent, get_curves, say, kind: str = "curves"):
         super().__init__(parent)
         self.get_curves = get_curves
+        self.kind = kind
         self.say = say
         self._waiting: tuple | None = None       # (info, curves, t0, beacons before, proc)
         self._timer = QtCore.QTimer(self)
@@ -54,7 +59,8 @@ class AnalysisMenu(QtWidgets.QMenu):
         if run:
             self.addSeparator()
         for m in inst:
-            a = self.addAction(f"Start {m.name} and send")
+            how = "" if self.kind == "curves" or "maps" in m.accepts else " (as curves, one per row)"
+            a = self.addAction(f"Start {m.name} and send{how}")
             a.setToolTip(m.description)
             a.triggered.connect(lambda _=False, m=m: self.start_and_send(m))
         if not inst:
@@ -75,13 +81,18 @@ class AnalysisMenu(QtWidgets.QMenu):
         curves = curves if curves is not None else self._curves()
         if not curves:
             return
+        what = "map" if self.kind == "maps" else "curve"
         try:
-            AL.send_curves(r.port, curves)
+            if self.kind == "maps":
+                AL.send_maps(r.port, curves, r.accepts)
+            else:
+                AL.send_curves(r.port, curves)
         except Exception as exc:
-            self.say(f"Analysis: {r.title} did not take the curves: {exc}", error=True)
+            self.say(f"Analysis: {r.title} did not take the {what}s: {exc}", error=True)
             return
         n = len(curves)
-        self.say(f"sent {n} curve{'s' if n != 1 else ''} to {r.title}")
+        how = "" if self.kind == "curves" or "maps" in r.accepts else " (as one curve per row)"
+        self.say(f"sent {n} {what}{'s' if n != 1 else ''} to {r.title}{how}")
 
     def start_and_send(self, m: AL.ModuleInfo):
         curves = self._curves()
@@ -107,6 +118,7 @@ class AnalysisMenu(QtWidgets.QMenu):
         if new:
             self._timer.stop()
             self._waiting = None
+            new[0].accepts = tuple(m.accepts)
             self.send_to(new[0], curves)
             return
         died = proc.poll() is not None
@@ -128,11 +140,13 @@ class AnalysisMenu(QtWidgets.QMenu):
 class Inbox(QtCore.QObject):
     """Moves curves from the listener thread to the GUI thread (a queued signal)."""
     curvesArrived = QtCore.Signal(object)          # list[Curve]
+    mapsArrived = QtCore.Signal(object)            # list[MapData]
     shutdownRequested = QtCore.Signal()
 
 
 def run_module(info: dict, window_class, argv=None) -> int:
-    """Start an analysis module: `window_class()` must have add_curves(curves).
+    """Start an analysis module: `window_class()` must have add_curves(curves);
+    with add_maps(maps) too, whole maps arrive as maps (else one curve per row).
 
         # fmr_fit/__main__.py
         return run_module(INFO, FitWindow, argv)
@@ -153,8 +167,12 @@ def run_module(info: dict, window_class, argv=None) -> int:
     inbox = Inbox()
     inbox.curvesArrived.connect(lambda curves: _deliver(win, curves))
     inbox.shutdownRequested.connect(win.close)
+    on_maps = None
+    if hasattr(win, "add_maps"):
+        inbox.mapsArrived.connect(lambda maps: _deliver(win, maps, "add_maps"))
+        on_maps = inbox.mapsArrived.emit
     lis = AL.Listener(info, on_curves=inbox.curvesArrived.emit,
-                      on_shutdown=inbox.shutdownRequested.emit)
+                      on_shutdown=inbox.shutdownRequested.emit, on_maps=on_maps)
     lis.start()
     app.aboutToQuit.connect(lis.stop)
     win.setWindowTitle(lis.title)
@@ -165,8 +183,8 @@ def run_module(info: dict, window_class, argv=None) -> int:
         lis.stop()
 
 
-def _deliver(win, curves):
-    win.add_curves(curves)
+def _deliver(win, items, method: str = "add_curves"):
+    getattr(win, method)(items)
     # Windows does not let a background program take the focus; it flashes the
     # taskbar button instead, which is what alert() asks for
     if win.isMinimized():
