@@ -5,7 +5,8 @@ shows is always one of two things, and both are described here as DATA, with
 no Qt anywhere, so every export can be tested without a screen:
 
 * a MAP  -- `Selection(detector, x, y, slices)` reduced to (y, x), drawn with a
-  `MapStyle` (colour map, limits, symmetric, log, per-line normalisation);
+  `MapStyle` (reference, colour map, limits, symmetric, log, per-line
+  normalisation);
 * CURVES -- each a `Curve`: the numbers AND the `Selection` + file they came
   from, so a set of overlaid curves can come from several measurement files and
   can still be regenerated from scratch.
@@ -38,7 +39,7 @@ from pathlib import Path
 import numpy as np
 import xarray as xr
 
-from .view import Reduced, Slice, coord_text, detector, reduce_cube
+from .view import Reduced, Slice, apply_part, coord_text, detector, reduce_cube
 
 #: How a curve is scaled for display/export. The stored numbers never change;
 #: normalisation is applied on the way out, so switching it back is lossless.
@@ -54,6 +55,11 @@ NORMS = {
 #: whose signal strength changes with frequency shows the resonance line far
 #: better when every line along the field is scaled to itself.
 MAP_NORMS = ("none", "rows", "columns")
+
+#: A map against a reference (see `reference_values`): one line, the median
+#: line, or the derivative-divide along an axis. Applied to the complex values.
+MAP_REFS = ("none", "row", "column", "median_rows", "median_columns", "dd_y", "dd_x")
+MAP_REF_OPS = ("divide", "subtract")
 
 #: Colour maps offered by the viewer -> the matplotlib name behind each. The
 #: viewer draws with these same tables (pyqtgraph loads them from matplotlib),
@@ -76,19 +82,26 @@ class Selection:
     y: str | None = None
     slices: dict[str, Slice] = field(default_factory=dict)
     part: str = "abs"
+    #: a CUT of a referenced map: {"x", "y" (the map's axes), "mode", "op", "i"}
+    #: -- the line is taken from the map AFTER the reference (see ref_line)
+    ref: dict | None = None
 
     def to_dict(self) -> dict:
-        return {"detector": self.detector, "x": self.x, "y": self.y, "part": self.part,
-                "slices": {d: {"mode": s.mode, "i0": int(s.i0),
-                               "i1": None if s.i1 is None else int(s.i1)}
-                           for d, s in self.slices.items()}}
+        d = {"detector": self.detector, "x": self.x, "y": self.y, "part": self.part,
+             "slices": {d: {"mode": s.mode, "i0": int(s.i0),
+                            "i1": None if s.i1 is None else int(s.i1)}
+                        for d, s in self.slices.items()}}
+        if self.ref:
+            d["ref"] = dict(self.ref)
+        return d
 
     @classmethod
     def from_dict(cls, d: dict) -> "Selection":
         return cls(detector=d["detector"], x=d["x"], y=d.get("y"),
                    part=d.get("part", "abs"),
                    slices={k: Slice(v["mode"], v["i0"], v.get("i1"))
-                           for k, v in d.get("slices", {}).items()})
+                           for k, v in d.get("slices", {}).items()},
+                   ref=dict(d["ref"]) if d.get("ref") else None)
 
 
 @dataclass
@@ -104,6 +117,12 @@ class Curve:
     selection: Selection
     source: str | None = None       # the .nc file; None = unsaved (a live run)
     visible: bool = True
+    #: the COMPLEX values behind y when the detector is complex (y is only the
+    #: part on screen). An FMR fit wants both quadratures; see analysis_link.py.
+    z: np.ndarray | None = None
+    #: the dims held at one value, {dim: (value, unit)}: "this sweep was at
+    #: 8 GHz" as a number, so a fit result can be plotted against it
+    held: dict[str, tuple[float, str]] = field(default_factory=dict)
 
 
 @dataclass
@@ -111,11 +130,14 @@ class MapStyle:
     cmap: str = "magma"
     invert: bool = False            # flip the colour map
     symmetric: bool = False         # limits +-max, centred on zero (Kerr signals)
-    auto: bool = True               # limits from the 1st/99th percentile
+    auto: bool = True               # limits from the 0.1st/99.9th percentile
     lo: float = 0.0                 # used when auto is False
     hi: float = 1.0
     log: bool = False               # log10 |value|
     norm: str = "none"              # MAP_NORMS
+    ref: str = "none"               # MAP_REFS, applied first (complex values)
+    ref_op: str = "divide"          # MAP_REF_OPS (row/column/median only)
+    ref_i: int = -1                 # the reference line's index (-1 = the last)
 
     def to_dict(self) -> dict:
         return dict(self.__dict__)
@@ -190,16 +212,89 @@ def make_curve(ds: xr.Dataset, sel: Selection, source: str | Path | None = None,
     sel = Selection.from_dict(sel.to_dict())        # detach from the caller's dict
     sel.y = None
     da = detector(ds, sel.detector)
-    red = reduce_cube(da, sel.x, None, sel.slices, sel.part)
-    y = np.asarray(red.data.values, dtype=float).copy()
+    cplx = np.iscomplexobj(da.values)
+    y_name = quantity_name(sel, cplx)
+    y_unit = "rad" if (sel.part == "arg" and cplx) else units_of(ds, sel.detector)
+    if sel.ref:
+        zl = ref_line(ds, sel)
+        y = np.asarray(apply_part(xr.DataArray(zl), sel.part).values, dtype=float).copy()
+        style, msel = _ref_style(sel)
+        y_name, y_unit = _ref_name_unit(ds, msel, style, y_name, y_unit)
+    else:
+        red = reduce_cube(da, sel.x, None, sel.slices, sel.part)
+        y = np.asarray(red.data.values, dtype=float).copy()
     x = coords_of(ds, sel.x, y.size).copy()
     if label is None:
         label = describe_slices(ds, sel) or sel.detector
+        if sel.ref:
+            label += f" ({reference_text(ds, msel, style)})"
+    z = None
+    if cplx:
+        z = (zl.astype(complex).copy() if sel.ref else
+             np.asarray(reduce_cube(da, sel.x, None, sel.slices, "complex").data.values,
+                        dtype=complex).copy())
     return Curve(x=x, y=y, label=label, x_name=sel.x, x_unit=units_of(ds, sel.x),
-                 y_name=quantity_name(sel, np.iscomplexobj(da.values)),
-                 y_unit="rad" if (sel.part == "arg" and np.iscomplexobj(da.values))
-                 else units_of(ds, sel.detector),
-                 selection=sel, source=str(source) if source else None)
+                 y_name=y_name, y_unit=y_unit,
+                 selection=sel, source=str(source) if source else None,
+                 z=z, held=held_values(ds, sel))
+
+
+def _ref_style(sel: Selection) -> tuple["MapStyle", Selection]:
+    """The map a referenced cut came from: its style (reference only) and axes."""
+    r = sel.ref
+    return (MapStyle(ref=r["mode"], ref_op=r.get("op", "divide"), ref_i=int(r.get("i", -1))),
+            Selection(sel.detector, x=r["x"], y=r["y"], slices=sel.slices, part=sel.part))
+
+
+def ref_line(ds: xr.Dataset, sel: Selection) -> np.ndarray:
+    """A cut of a referenced map, as COMPLEX values along sel.x: the map (its
+    two axes, everything else as sel says) referenced as a whole, then the line
+    at the held index. So a column divided by the 800 mT column, a row divided
+    by its own value at 800 mT, a derivative-divide across the lines -- each
+    exactly what the map shows through the cursor."""
+    style, msel = _ref_style(sel)
+    held = msel.y if sel.x == msel.x else msel.x
+    if sel.x not in (msel.x, msel.y) or held == sel.x:
+        raise ValueError(f"a referenced cut runs along {msel.x} or {msel.y}")
+    da = detector(ds, sel.detector)
+    slices = {d: s for d, s in sel.slices.items() if d != held}
+    red = reduce_cube(da, msel.x, msel.y, slices, "complex")
+    ny, nx = red.data.shape
+    zc = reference_values(red.data.values, style, coords_of(ds, msel.x, nx),
+                          coords_of(ds, msel.y, ny))
+    s = sel.slices.get(held, Slice())
+    if s.mode != "at":
+        raise ValueError(f"hold {held} at one value to reference along it "
+                         f"(it is averaged now)")
+    k = s.span(da.sizes[held])[0]
+    return np.asarray(zc[k] if held == msel.y else zc[:, k])
+
+
+def _ref_name_unit(ds, sel: Selection, style: "MapStyle", name: str, unit: str):
+    """'|s21| (÷ field = 800 mT)', and the unit a reference leaves."""
+    name = f"{name} ({reference_text(ds, sel, style)})"
+    if style.ref in ("dd_y", "dd_x") and sel.part != "arg":
+        dim = sel.y if style.ref == "dd_y" else sel.x
+        unit = f"1/{units_of(ds, dim)}" if units_of(ds, dim) else ""
+    elif style.ref_op == "divide" and sel.part != "arg":
+        unit = ""
+    return name, unit
+
+
+def held_values(ds: xr.Dataset, sel: Selection) -> dict[str, tuple[float, str]]:
+    """{dim: (value, unit)} for every dim held at ONE index -- a dim of length 1
+    too: "this sweep was at 10 GHz" is what an analysis needs, even when the
+    label leaves it out as obvious."""
+    da = detector(ds, sel.detector)
+    out = {}
+    for d in da.dims:
+        if d in (sel.x, sel.y):
+            continue
+        s = sel.slices.get(d, Slice())
+        i0, i1 = s.span(da.sizes[d])
+        if i0 == i1:
+            out[d] = (float(coords_of(ds, d, da.sizes[d])[i0]), units_of(ds, d))
+    return out
 
 
 def curves_along(ds: xr.Dataset, sel: Selection, dim: str, indices,
@@ -255,11 +350,25 @@ def make_map(ds: xr.Dataset, sel: Selection, style: MapStyle | None = None,
     if sel.y is None:
         raise ValueError("a map needs a Y dimension")
     da = detector(ds, sel.detector)
-    red = reduce_cube(da, sel.x, sel.y, sel.slices, sel.part)
-    z = style_values(np.asarray(red.data.values, dtype=float), style)
+    cplx = np.iscomplexobj(da.values)
+    name = quantity_name(sel, cplx)
+    unit = "rad" if (sel.part == "arg" and cplx) else units_of(ds, sel.detector)
+    if style.ref == "none":
+        red = reduce_cube(da, sel.x, sel.y, sel.slices, sel.part)
+        z = np.asarray(red.data.values, dtype=float)
+    else:
+        # reference BEFORE |z| / arg: the ratio of two complex numbers
+        red = reduce_cube(da, sel.x, sel.y, sel.slices, "complex")
+        ny, nx = red.data.shape
+        zc = reference_values(red.data.values, style, coords_of(ds, sel.x, nx),
+                              coords_of(ds, sel.y, ny))
+        red.data = apply_part(red.data.copy(data=zc), sel.part)
+        if red.averaged > 1 and cplx and sel.part in ("abs", "arg"):
+            red.note = "coherent average (complex averaged, then " + sel.part + ")"
+        z = np.asarray(red.data.values, dtype=float)
+        name, unit = _ref_name_unit(ds, sel, style, name, unit)
+    z = style_values(z, style)
     ny, nx = z.shape
-    name = quantity_name(sel, np.iscomplexobj(da.values))
-    unit = "rad" if (sel.part == "arg" and np.iscomplexobj(da.values)) else units_of(ds, sel.detector)
     if style.norm != "none":
         name, unit = f"{name} (normalised per {style.norm[:-1]})", ""
     if style.log:
@@ -270,6 +379,81 @@ def make_map(ds: xr.Dataset, sel: Selection, style: MapStyle | None = None,
             z_name=name, z_unit=unit, levels=map_levels(z, style),
             selection=sel, source=str(source) if source else None)
     return m, red
+
+
+def _ref_index(i: int, n: int) -> int:
+    """Python-style: -1 is the last line (the highest field of a sweep)."""
+    i = int(i) + n if int(i) < 0 else int(i)
+    return min(max(i, 0), n - 1)
+
+
+def reference_values(z: np.ndarray, style: MapStyle, x: np.ndarray, y: np.ndarray) -> np.ndarray:
+    """The map against a reference, on the COMPLEX values (before |z| or arg).
+
+    A VNA's S21 carries the cables, the coupler and the amplifier as a
+    frequency-dependent background far larger than the magnon line; divided by
+    a line where the sample does nothing (the resonance pushed out of the band
+    by a large field), only the sample is left -- and done on the complex
+    numbers, arg of the ratio is the phase the SAMPLE adds.
+
+      row / column     : every line divided by (or minus) one line, index ref_i
+      median_rows / _columns : ... by the median line -- no reference measured:
+                         a line that moves across the map is in few lines, so
+                         the median is the background (real and imag separately)
+      dd_y / dd_x      : derivative-divide (Maier-Flaig et al., PRB 2018):
+                         (z[k+1] - z[k-1]) / ((c[k+1] - c[k-1]) z[k]) along the
+                         axis -- the background cancels if it is slow along it;
+                         units 1/axis, the first and last line are NaN
+    NaN-aware; a zero in the reference gives a hole, not an infinity.
+    """
+    mode = style.ref
+    if mode == "none":
+        return z
+    z = np.asarray(z)
+    if not np.iscomplexobj(z):
+        z = z.astype(float)
+    with np.errstate(divide="ignore", invalid="ignore"), warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        if mode in ("dd_y", "dd_x"):
+            axis = 0 if mode == "dd_y" else 1
+            c = np.asarray(y if axis == 0 else x, dtype=float)
+            zz = z if axis == 0 else z.T
+            out = np.full(zz.shape, np.nan, dtype=zz.dtype)
+            if zz.shape[0] >= 3:
+                dc = (c[2:] - c[:-2])[:, None]
+                out[1:-1] = (zz[2:] - zz[:-2]) / (dc * zz[1:-1])
+            out[~np.isfinite(out)] = np.nan
+            return out if axis == 0 else out.T
+        if mode in ("row", "column"):
+            n = z.shape[0 if mode == "row" else 1]
+            i = _ref_index(style.ref_i, n)
+            ref = z[i:i + 1, :] if mode == "row" else z[:, i:i + 1]
+        elif mode in ("median_rows", "median_columns"):
+            axis = 0 if mode == "median_rows" else 1
+            ref = np.nanmedian(z.real, axis=axis, keepdims=True)
+            if np.iscomplexobj(z):
+                ref = ref + 1j * np.nanmedian(z.imag, axis=axis, keepdims=True)
+        else:
+            raise ValueError(f"unknown reference '{mode}' (have: {', '.join(MAP_REFS)})")
+        if style.ref_op == "subtract":
+            return z - ref
+        out = z / ref
+        out[~np.isfinite(out)] = np.nan
+        return out
+
+
+def reference_text(ds: xr.Dataset, sel: Selection, style: MapStyle) -> str:
+    """'÷ field = 800 mT' -- what the map was referenced to, in the quantity."""
+    op = "−" if style.ref_op == "subtract" else "÷"
+    if style.ref in ("row", "column"):
+        dim = sel.y if style.ref == "row" else sel.x
+        n = detector(ds, sel.detector).sizes[dim]
+        return f"{op} {dim} = {coord_text(ds, dim, _ref_index(style.ref_i, n))}"
+    if style.ref in ("median_rows", "median_columns"):
+        return f"{op} median over {sel.y if style.ref == 'median_rows' else sel.x}"
+    if style.ref in ("dd_y", "dd_x"):
+        return f"d/d{sel.y if style.ref == 'dd_y' else sel.x} ÷"
+    return ""
 
 
 def style_values(z: np.ndarray, style: MapStyle) -> np.ndarray:
@@ -297,7 +481,11 @@ def map_levels(z: np.ndarray, style: MapStyle) -> tuple[float, float]:
     if not style.auto:
         lo, hi = float(style.lo), float(style.hi)
     elif fin.size:
-        lo, hi = float(np.percentile(fin, 1)), float(np.percentile(fin, 99))
+        # 0.1 / 99.9, not 1 / 99: a sharp resonance on a VNA map (a 10 MHz
+        # line in 16 GHz) covers < 1 % of the pixels, and 1 / 99 put the limits
+        # inside the noise -- the map showed noise at full contrast and the line
+        # clipped (2026-09-30). One hot pixel in 1000 is still ignored.
+        lo, hi = float(np.percentile(fin, 0.1)), float(np.percentile(fin, 99.9))
     else:
         lo, hi = 0.0, 1.0
     if style.symmetric:
@@ -562,10 +750,64 @@ def reduce(da, x, y=None, slices=None, part="abs"):
     for d in others:
         if d in da.dims:
             da = da.isel({d: 0})
-    if np.iscomplexobj(da.values):
-        fn = {"abs": np.abs, "arg": np.angle, "real": np.real, "imag": np.imag}[part]
-        da = xr.DataArray(fn(da.values), dims=da.dims, coords=da.coords)
+    if np.iscomplexobj(da.values) and part != "complex":
+        da = xr.DataArray(part_of(da.values, part), dims=da.dims, coords=da.coords)
     return da.transpose(*[d for d in (y, x) if d])
+
+
+def part_of(z, part):
+    """Complex -> the part on screen; a real array stays as it is."""
+    if not np.iscomplexobj(z):
+        return np.asarray(z, dtype=float)
+    return {"abs": np.abs, "arg": np.angle, "real": np.real, "imag": np.imag}[part](z)
+
+
+def reference(z, mode, op, i, xs, ys):
+    """The map against a reference, on the COMPLEX values (before |z| / arg).
+    row/column: every line divided by (or minus) line i; median_rows/_columns:
+    by the median line; dd_y/dd_x: derivative-divide (z[k+1] - z[k-1]) /
+    ((c[k+1] - c[k-1]) z[k]) along that axis."""
+    if mode == "none":
+        return z
+    z = np.asarray(z) if np.iscomplexobj(z) else np.asarray(z, dtype=float)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        if mode in ("dd_y", "dd_x"):
+            zz, c = (z, ys) if mode == "dd_y" else (z.T, xs)
+            out = np.full(zz.shape, np.nan, dtype=zz.dtype)
+            if zz.shape[0] >= 3:
+                dc = (np.asarray(c, dtype=float)[2:] - np.asarray(c, dtype=float)[:-2])[:, None]
+                out[1:-1] = (zz[2:] - zz[:-2]) / (dc * zz[1:-1])
+            out[~np.isfinite(out)] = np.nan
+            return out if mode == "dd_y" else out.T
+        if mode in ("row", "column"):
+            n = z.shape[0 if mode == "row" else 1]
+            i = int(i) + n if int(i) < 0 else int(i)
+            i = min(max(i, 0), n - 1)
+            ref = z[i:i + 1, :] if mode == "row" else z[:, i:i + 1]
+        else:
+            axis = 0 if mode == "median_rows" else 1
+            ref = np.nanmedian(z.real, axis=axis, keepdims=True)
+            if np.iscomplexobj(z):
+                ref = ref + 1j * np.nanmedian(z.imag, axis=axis, keepdims=True)
+        if op == "subtract":
+            return z - ref
+        out = z / ref
+        out[~np.isfinite(out)] = np.nan
+        return out
+
+
+def ref_line(ds, c):
+    """A cut of a referenced map: the map referenced as a whole, then the line."""
+    r = c["ref"]
+    held = r["y"] if c["x"] == r["x"] else r["x"]
+    slices = {d: s for d, s in c["slices"].items() if d != held}
+    m = reduce(detector(ds, c["detector"]), r["x"], r["y"], slices, "complex")
+    xs = ds[r["x"]].values if r["x"] in ds.coords else np.arange(m.shape[1])
+    ys = ds[r["y"]].values if r["y"] in ds.coords else np.arange(m.shape[0])
+    z = reference(m.values, r["mode"], r.get("op", "divide"), r.get("i", -1), xs, ys)
+    n = ds.sizes[held]
+    k = min(max(int(c["slices"].get(held, {"i0": 0})["i0"]), 0), n - 1)
+    return part_of(z[k] if held == r["y"] else z[:, k], c["part"])
 
 
 def normalize(v, mode):
@@ -647,8 +889,11 @@ def notebook_cells(nb_dir: Path, m: Map | None = None, style: MapStyle | None = 
             f"sel = {_py(sel)}\n"
             f"style = {_py(style.to_dict())}\n\n"
             f"ds = data[{key[m.source]!r}]\n"
-            "m = reduce(detector(ds, sel['detector']), sel['x'], sel['y'], sel['slices'], sel['part'])\n"
-            "z = m.values.astype(float)\n"
+            "m = reduce(detector(ds, sel['detector']), sel['x'], sel['y'], sel['slices'], 'complex')\n"
+            "xs = ds[sel['x']].values if sel['x'] in ds.coords else np.arange(m.shape[1])\n"
+            "ys = ds[sel['y']].values if sel['y'] in ds.coords else np.arange(m.shape[0])\n"
+            "z = reference(m.values, style['ref'], style['ref_op'], style['ref_i'], xs, ys)\n"
+            "z = part_of(z, sel['part'])\n"
             "if style['norm'] in ('rows', 'columns'):\n"
             "    axis = 1 if style['norm'] == 'rows' else 0\n"
             "    peak = np.nanmax(np.abs(z), axis=axis, keepdims=True)\n"
@@ -662,8 +907,6 @@ def notebook_cells(nb_dir: Path, m: Map | None = None, style: MapStyle | None = 
             f"cmap = plt.get_cmap({cmap!r})\n"
             "if style['invert']:\n"
             "    cmap = cmap.reversed()\n"
-            "xs = ds[sel['x']].values if sel['x'] in ds.coords else np.arange(z.shape[1])\n"
-            "ys = ds[sel['y']].values if sel['y'] in ds.coords else np.arange(z.shape[0])\n"
             "mesh = ax.pcolormesh(xs, ys, z, cmap=cmap,\n"
             "                     vmin=vmin, vmax=vmax, shading='nearest')\n"
             f"ax.set_xlabel({axis_title(m.x_name, m.x_unit)!r})\n"
@@ -683,9 +926,12 @@ def notebook_cells(nb_dir: Path, m: Map | None = None, style: MapStyle | None = 
             "lines = []\n"
             "for k, c in enumerate(CURVES):\n"
             "    ds = data[c['file']]\n"
-            "    y = reduce(detector(ds, c['detector']), c['x'], None, c['slices'], c['part'])\n"
+            "    if c.get('ref'):                  # a cut of a referenced map\n"
+            "        y = ref_line(ds, c)\n"
+            "    else:\n"
+            "        y = reduce(detector(ds, c['detector']), c['x'], None, c['slices'], c['part']).values\n"
             "    x = ds[c['x']].values if c['x'] in ds.coords else np.arange(y.size)\n"
-            "    yv = normalize(y.values, NORM) + k * OFFSET\n"
+            "    yv = normalize(y, NORM) + k * OFFSET\n"
             "    lines.append((x, yv))\n"
             "    ax.plot(x, yv, marker='o', ms=2.5, lw=1.2, label=c['label'])\n"
             f"ax.set_xlabel({curve_axis_titles(curves, norm)[0]!r})\n"

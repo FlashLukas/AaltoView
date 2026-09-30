@@ -1,0 +1,8 @@
+# What AaltoView's "Analysis" menu shows. Drop this folder into AnalysisModules/
+# and the viewer finds it; see docs/ANALYSIS_MODULES.md.
+[module]
+key = "fmr_fit"
+name = "FMR fit"
+description = "Complex Lorentzian (VNA): resonance position, linewidth, amplitude, mixing phase; Kittel / anisotropy / damping"
+accepts = ["curves"]
+python = "fmr_fit"          # started as: python -m fmr_fit

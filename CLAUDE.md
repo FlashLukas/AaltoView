@@ -15,7 +15,15 @@ NanoSpin group, Aalto University. Read `README.md` first.
 - `src/aaltoview/export.py` -- figures, `.dat`/`.csv`, notebooks (the notebook
   carries its OWN reduction code; a test executes it and compares with view.py).
 - `src/aaltoview/origin.py` -- Origin push, run in a child process.
-- `src/aaltoview/apps/` -- the Qt window (`viewer.py`), shared widgets, theme.
+- `src/aaltoview/apps/` -- the Qt window (`viewer.py`), shared widgets, theme,
+  `analysis.py` (the "Analysis" menu, and `run_module()` for modules).
+- `src/aaltoview/analysis_link.py` -- viewer <-> analysis modules: folder scan
+  (available), launch, beacon files (running), ZeroMQ + JSON (curves). No Qt.
+- `AnalysisModules/<name>/` -- analysis modules, DROP-IN: a folder with
+  `module.toml` (the menu entry) + `pyproject.toml`; the viewer scans the folder,
+  the workspace glob `AnalysisModules/*` takes it in, `uv run --all-packages`
+  installs its packages on first start. `AnalysisModules/fmr-fit` first. How to
+  write one: `docs/ANALYSIS_MODULES.md`; `tools/new_analysis_module.py`.
 - AaltoFlow's scan-core imports `view`, `data` and `apps.theme` from here: ONE
   copy of the code, and the SAME `COLORS` dict for both apps.
 
@@ -24,9 +32,12 @@ NanoSpin group, Aalto University. Read `README.md` first.
 - The theme mechanism and the other shared conventions are AaltoFlow's
   (`docs/DEVELOPER_NOTES.md` in that repo); never rebind `COLORS`.
 - Open files with `encoding="utf-8"`; printed text stays ASCII.
-- Tests stay offline: `uv sync --extra gui; uv run pytest -q`. The Origin test
+- Tests stay offline: `uv sync --all-packages --extra gui; uv run pytest -q`
+  (modules' tests included). The Origin test
   runs only with `AALTOVIEW_TEST_ORIGIN=1`.
 - After a GUI change: `uv run python tools/render_docs.py`, and look at both themes.
+- A fit is tested against numbers put IN (simulated data with known parameters,
+  the Kittel values of the demo data), never only against itself.
 
 ## Private notes
 `CLAUDE.local.md` is for personal working notes: gitignored, loaded by Claude

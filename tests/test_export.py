@@ -377,3 +377,109 @@ def test_a_half_written_complex_pair_is_not_offered_as_complex():
                                 {"complex_pair": "s", "complex_part": "real"})})
     assert detector_names(ds) == ["s_real"]
     assert detector(ds, "s_real").values.tolist() == [0.0, 1.0, 2.0]
+
+
+# ─────────────────────────────── map reference ────────────────────────────────
+
+def _vna_map(tmp_path) -> Path:
+    """S21 = background(f) x (1 + line(f, B)): a cable/amplifier background
+    that does not depend on the field, times the sample's response; at 500 mT
+    the line is far above the band (22.6 GHz), so that row is the background
+    up to the line's tail."""
+    f = np.linspace(2.0, 6.0, 81)
+    b = np.array([20.0, 40.0, 60.0, 80.0, 500.0])
+    bg = (0.3 + 0.1 * f) * np.exp(-2j * np.pi * 1.7 * f)          # ripple-free, delay
+    f0 = 28.0e-3 * np.sqrt(b * (b + 800.0))                        # Kittel, GHz
+    line = 0.2 * 0.05 / (f0[:, None] - f[None, :] - 0.05j)
+    z = bg[None, :] * (1 + line)
+    pair = {"complex_pair": "s21"}
+    ds = xr.Dataset({"s21_real": (("field", "freq"), z.real, {**pair, "complex_part": "real"}),
+                     "s21_imag": (("field", "freq"), z.imag, {**pair, "complex_part": "imag"})},
+                    coords={"field": ("field", b, {"units": "mT"}),
+                            "freq": ("freq", f, {"units": "GHz"})})
+    p = tmp_path / "vna.nc"
+    ds.to_netcdf(p, engine="h5netcdf")
+    return p
+
+
+def test_a_map_divided_by_its_reference_row_is_the_sample_alone(tmp_path):
+    ds = xr.open_dataset(_vna_map(tmp_path), engine="h5netcdf").load()
+    f, b = ds["freq"].values, ds["field"].values
+    f0 = 28.0e-3 * np.sqrt(b * (b + 800.0))
+    sample = 1 + 0.2 * 0.05 / (f0[:, None] - f[None, :] - 0.05j)
+    truth = sample / sample[-1]        # the 500 mT row still has the line's far tail
+    sel = E.Selection("s21", x="freq", y="field", part="abs")
+    m, _ = E.make_map(ds, sel, E.MapStyle(ref="row", ref_i=-1))   # the 500 mT row
+    np.testing.assert_allclose(m.z, np.abs(truth), rtol=1e-9)
+    assert m.z_name == "|s21| (÷ field = 500 mT)" and m.z_unit == ""
+    # the phase of the RATIO: the delay's 1.7 turns per GHz are gone
+    sel.part = "arg"
+    m, _ = E.make_map(ds, sel, E.MapStyle(ref="row", ref_i=4))
+    np.testing.assert_allclose(m.z, np.angle(truth), atol=1e-9)
+    # subtract keeps the unit
+    sel.part = "abs"
+    m, _ = E.make_map(ds, sel, E.MapStyle(ref="row", ref_op="subtract"))
+    assert m.z[-1] == pytest.approx(np.zeros(len(f)))
+
+
+def test_median_and_derivative_divide_need_no_reference_row():
+    z = np.array([[1.0, 2.0, 4.0], [2.0, 4.0, 8.0], [9.0, 2.0, 4.0]], dtype=complex)
+    med = E.reference_values(z, E.MapStyle(ref="median_rows"), np.arange(3), np.arange(3))
+    np.testing.assert_allclose(med, z / np.array([[2.0, 2.0, 4.0]]))
+    # d/dx / z of exp(k x) is k, whatever the background amplitude
+    x = np.linspace(0.0, 1.0, 201)
+    y = np.array([0.0, 1.0])
+    zz = np.array([3.0, 0.5])[:, None] * np.exp(2.0 * x)[None, :]
+    dd = E.reference_values(zz, E.MapStyle(ref="dd_x"), x, y)
+    assert np.isnan(dd[:, 0]).all() and np.isnan(dd[:, -1]).all()
+    np.testing.assert_allclose(dd[:, 1:-1], 2.0, rtol=1e-4)
+    # a hole stays a hole; a zero reference is a hole, not infinity
+    z[0, 1] = np.nan
+    z[2, 2] = 0.0
+    out = E.reference_values(z, E.MapStyle(ref="row", ref_i=2), np.arange(3), np.arange(3))
+    assert np.isnan(out[0, 1]) and np.isnan(out[:, 2]).all()
+
+
+def test_the_notebook_recomputes_a_referenced_map(tmp_path):
+    src = _vna_map(tmp_path)
+    ds = xr.open_dataset(src, engine="h5netcdf").load()
+    nb_dir = tmp_path / "analysis"
+    nb_dir.mkdir()
+    for style in (E.MapStyle(ref="row", ref_i=-1, norm="rows"),
+                  E.MapStyle(ref="dd_y", log=True),
+                  E.MapStyle(ref="median_columns", ref_op="subtract")):
+        for part in ("abs", "arg"):
+            m, _ = E.make_map(ds, E.Selection("s21", x="freq", y="field", part=part),
+                              style, source=src)
+            ns = _run_notebook(E.write_notebook(nb_dir / "v.ipynb", m=m, style=style))
+            np.testing.assert_allclose(ns["z"], m.z, equal_nan=True)
+
+
+def test_a_cut_of_a_referenced_map_is_the_line_on_the_map(tmp_path):
+    """Row / Column -> 1D of a referenced map: the numbers of the map through
+    the cursor, complex z referenced too (an analysis module gets the sample
+    alone), and the notebook regenerates it."""
+    src = _vna_map(tmp_path)
+    ds = xr.open_dataset(src, engine="h5netcdf").load()
+    ref = {"x": "freq", "y": "field", "mode": "row", "op": "divide", "i": -1}
+    for style, r in ((E.MapStyle(ref="row", ref_i=-1), ref),
+                     (E.MapStyle(ref="dd_x"), {**ref, "mode": "dd_x"})):
+        m, _ = E.make_map(ds, E.Selection("s21", x="freq", y="field"), style)
+        col = E.make_curve(ds, E.Selection("s21", x="freq", slices={"field": Slice("at", 1)},
+                                           ref=r), source=src)          # along freq, 40 mT
+        np.testing.assert_allclose(col.y, m.z[1], equal_nan=True)
+        row = E.make_curve(ds, E.Selection("s21", x="field", slices={"freq": Slice("at", 30)},
+                                           ref=r), source=src)          # along field
+        np.testing.assert_allclose(row.y, m.z[:, 30], equal_nan=True)
+    col = E.make_curve(ds, E.Selection("s21", x="freq", part="arg",
+                                       slices={"field": Slice("at", 1)}, ref=ref), source=src)
+    assert col.label == "field = 40 mT (÷ field = 500 mT)" and col.y_unit == "rad"
+    np.testing.assert_allclose(np.angle(col.z), col.y)
+    back = E.Selection.from_dict(col.selection.to_dict())
+    assert back.ref == ref
+    nb_dir = tmp_path / "nb"
+    nb_dir.mkdir()
+    ns = _run_notebook(E.write_notebook(nb_dir / "c.ipynb", curves=[col, row]))
+    (_, y1), (_, y2) = ns["lines"]
+    np.testing.assert_allclose(y1, col.y)
+    np.testing.assert_allclose(y2, row.y, equal_nan=True)

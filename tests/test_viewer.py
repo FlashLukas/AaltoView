@@ -16,7 +16,7 @@ pytest.importorskip("PySide6")
 pytest.importorskip("pyqtgraph")
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6 import QtWidgets  # noqa: E402
+from PySide6 import QtCore, QtWidgets  # noqa: E402
 
 
 def _cube() -> xr.Dataset:
@@ -223,3 +223,112 @@ def test_the_complex_part_choice_follows_the_detector(viewer, tmp_path):
     viewer.set_dataset(ds2, tmp_path / "complex.nc")
     assert c.det_combo.currentText() == "s"
     assert not c.part_combo.isHidden()
+
+
+def test_the_map_divided_by_a_reference_line(viewer):
+    """Reference = one Y line, picked from its values or at the cursor; the
+    values of the axis follow the axis; the 1D cuts are the referenced lines."""
+    _open_first(viewer)                                   # x, y; freq held at 1 GHz
+    m = viewer.map
+    m.ref_combo.setCurrentIndex(m.ref_combo.findData("row"))
+    assert not m.ref_value.isHidden() and not m.ref_op.isHidden()
+    assert m.ref_value.currentText() == "20 um"           # the last value by default
+    np.testing.assert_allclose(m._map.z, [[100 / 120, 101 / 121], [110 / 120, 111 / 121],
+                                          [1.0, 1.0]])
+    assert m._map.z_name == "kerr (÷ y = 20 um)" and m._map.z_unit == ""
+    m._place_cursor(0, 0)
+    m._ref_at_cursor()
+    assert m.ref_value.currentText() == "0 um"
+    m.ref_op.setCurrentIndex(m.ref_op.findData("subtract"))
+    np.testing.assert_allclose(m._map.z, [[0, 0], [10, 10], [20, 20]])
+    m._cut("row")                                         # through y = 0 um
+    c = viewer.lines.curves[-1]
+    assert c.y.tolist() == [0.0, 0.0]                     # the map's row, referenced
+    assert c.label == "freq = 1 GHz, y = 0 um (− y = 0 um)"
+    m._place_cursor(1, 2)
+    m._cut("column")                                      # along y at x = 1
+    assert viewer.lines.curves[-1].y.tolist() == [0.0, 10.0, 20.0]
+    m.controls.x_combo.setCurrentText("freq")             # the Y axis is now x...
+    m.controls.y_combo.setCurrentText("y")
+    assert m.ref_value.count() == 3
+    m.ref_combo.setCurrentIndex(m.ref_combo.findData("dd_x"))
+    assert m.ref_op.isHidden() and m.ref_value.isHidden()
+    assert m._map.z_unit == "1/GHz"
+
+
+def test_1d_curves_divided_by_the_curve_at_another_value(viewer):
+    """The 1D reference: the same selection at another value of the 'one per
+    value of' dim -- on the preview and on the curves added."""
+    _open_first(viewer)
+    lines = viewer.lines
+    lines.controls.x_combo.setCurrentText("freq")        # along freq, one per y
+    lines.along_combo.setCurrentText("y")
+    lines.ref_combo.setCurrentIndex(lines.ref_combo.findData("row"))
+    assert lines.ref_value.currentText() == "20 um"       # the last value
+    for i in range(lines.values.count()):
+        lines.values.item(i).setSelected(True)
+    lines.add_selected()
+    f = np.array([1.0, 2.0, 3.0, 4.0])
+    for c, yv in zip(lines.curves, (0.0, 10.0, 20.0)):
+        np.testing.assert_allclose(c.y, (f * 100 + yv) / (f * 100 + 20))   # x = 0 held
+    assert lines.curves[0].label.endswith("(÷ y = 20 um)")
+    np.testing.assert_allclose(lines.preview.yData, lines.curves[0].y)  # preview at y = 0
+
+
+def test_the_1d_view_fits_the_visible_curves(viewer):
+    """A curve on another scale added, then hidden: the view follows what is
+    visible, and the preview does not stretch it when curves are shown."""
+    _open_first(viewer)
+    lines = viewer.lines
+    lines.controls.x_combo.setCurrentText("freq")
+    lines.add_current()                                   # 100 ... 400 mdeg
+    lines.plot.vb.setRange(yRange=(-5000, 5000))          # the operator zoomed out
+    lines.ref_combo.setCurrentIndex(lines.ref_combo.findData("row"))
+    lines.add_current()                                   # ~0.8 ... 0.95
+    lines.table.topLevelItem(0).setCheckState(0, QtCore.Qt.Unchecked)
+    lo, hi = lines.plot.vb.viewRange()[1]
+    assert -0.5 < lo < 0.9 and 0.9 < hi < 1.5, (lo, hi)
+
+
+def test_a_curve_divided_by_itself_does_not_freeze_the_plot(viewer):
+    """The reference curve itself is 1 +- 1e-16: the view fitted to that and
+    pyqtgraph's tick loop never ended (the viewer froze). The view keeps a
+    sane height, and painting it finishes."""
+    _open_first(viewer)
+    lines = viewer.lines
+    lines.controls.x_combo.setCurrentText("freq")
+    lines.along_combo.setCurrentText("y")
+    lines.ref_combo.setCurrentIndex(lines.ref_combo.findData("row"))   # y = 20 um
+    next(r for r in lines.controls.rows if r.dim == "y").slider.setValue(2)
+    assert np.allclose(lines.preview.yData, 1.0)
+    lo, hi = lines.plot.vb.viewRange()[1]
+    assert hi - lo >= 1e-6
+    lines.add_current()
+    lo, hi = lines.plot.vb.viewRange()[1]
+    assert hi - lo >= 1e-6
+    lines.glw.grab()                                      # paints the axes
+
+
+def test_a_long_noisy_sweep_paints_fast(viewer, tmp_path):
+    """arg of a difference jumps +-pi at every point: antialiased (or dashed),
+    16001 such points took Qt 8-14 s per repaint and the window froze. Long
+    curves -- the preview and the added ones -- are drawn without it."""
+    import time
+    rng = np.random.default_rng(0)
+    f = np.linspace(2.0, 18.0, 16001)
+    z = rng.normal(size=(2, f.size)) + 1j * rng.normal(size=(2, f.size))
+    ds = xr.Dataset({"s_real": (("field", "freq"), z.real,
+                                {"complex_pair": "s", "complex_part": "real"}),
+                     "s_imag": (("field", "freq"), z.imag,
+                                {"complex_pair": "s", "complex_part": "imag"})},
+                    coords={"field": ("field", [0.0, 800.0]), "freq": ("freq", f)})
+    viewer.set_dataset(ds, tmp_path / "noisy.nc")
+    viewer.resize(1400, 900)
+    lines = viewer.lines
+    lines.controls.x_combo.setCurrentText("freq")
+    lines.controls.part_combo.setCurrentText("arg z")
+    lines.add_current()
+    assert not lines.preview.opts["antialias"] and not lines._items[0].opts["antialias"]
+    t = time.perf_counter()
+    lines.glw.grab()
+    assert time.perf_counter() - t < 2.0

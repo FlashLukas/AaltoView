@@ -12,6 +12,8 @@ What arrives in Origin:
     map    -> a matrix with its X/Y extent set, plus a colour-map graph; if the
               axes are NOT evenly spaced (a matrix only knows start and end) it
               goes in as X/Y/Z columns instead, so no coordinate is invented
+    table  -> a workbook of named columns with their designations (X, Y, error
+              bars, labels): what an analysis module's results table sends
 
 Attach, never own: `op.attach()` connects to the Origin you already have open
 (or starts one), and `op.detach()` leaves it running with the data in it. The
@@ -143,11 +145,29 @@ def push_map(m: Map, name: str = "AaltoView map", graph: bool = True) -> str:
     return book.name
 
 
+def push_table(columns: list[dict], name: str = "AaltoView table") -> str:
+    """Columns {name, unit, comment, values, kind} -> a new workbook, no graph.
+
+    kind is Origin's designation: X, Y, E (error bar of the Y column before it),
+    L (text label). With E set, a plot of the Y column has its error bars already.
+    """
+    op = _op()
+    book = op.new_book("w", lname=name)
+    wks = book[0]
+    for j, c in enumerate(columns):
+        vals = c["values"]
+        if c.get("kind") != "L":
+            vals = _col(vals)
+        wks.from_list(j, vals, lname=c["name"], units=c.get("unit", ""),
+                      comments=c.get("comment", ""), axis=c.get("kind", "Y"))
+    return book.name
+
+
 # ─────────────── the child-process hand-over: payload file + CLI ──────────────
 
 def save_payload(path: str | Path, *, curves: list[Curve] | None = None,
-                 m: Map | None = None, norm: str = "none", offset: float = 0.0,
-                 name: str = "") -> Path:
+                 m: Map | None = None, table: list[dict] | None = None,
+                 norm: str = "none", offset: float = 0.0, name: str = "") -> Path:
     """Everything push_* needs, in one .npz (arrays as arrays, the rest as JSON)."""
     path = Path(path)
     arrays, meta = {}, {"norm": norm, "offset": offset, "name": name}
@@ -164,6 +184,11 @@ def save_payload(path: str | Path, *, curves: list[Curve] | None = None,
                                    ("label", "x_name", "x_unit", "y_name", "y_unit",
                                     "source", "visible")}
                                   | {"selection": c.selection.to_dict()})
+    if table is not None:
+        meta["table"] = [{"name": c["name"], "unit": c.get("unit", ""),
+                          "comment": c.get("comment", ""), "kind": c.get("kind", "Y"),
+                          "values": [v if isinstance(v, str) else float(v)
+                                     for v in c["values"]]} for c in table]
     np.savez(path, meta=np.array(json.dumps(meta)), **arrays)
     return path
 
@@ -178,6 +203,8 @@ def load_payload(path: str | Path) -> dict:
                              selection=Selection.from_dict(mm["selection"]),
                              **{k: mm[k] for k in ("x_name", "x_unit", "y_name", "y_unit",
                                                    "z_name", "z_unit", "source")})
+        if "table" in meta:
+            out["table"] = meta["table"]
         if "curves" in meta:
             out["curves"] = [
                 Curve(x=f[f"cx{i}"], y=f[f"cy{i}"],
@@ -190,6 +217,8 @@ def load_payload(path: str | Path) -> dict:
 
 def push_payload(path: str | Path) -> str:
     p = load_payload(path)
+    if "table" in p:
+        return push_table(p["table"], name=p["name"] or "AaltoView table")
     if "map" in p:
         return push_map(p["map"], name=p["name"] or "AaltoView map")
     return push_curves(p["curves"], p["norm"], p["offset"], name=p["name"] or "AaltoView curves")
