@@ -28,6 +28,13 @@ chi = f0 df / (f0^2 - f^2 - i f df), a 3.2 ns cable delay, a standing-wave
 ripple and a loss sloping with frequency -- VNA_DELAY / VNA_RIPPLE below --
 plus a sweep at 500 mT, where nothing resonates in the band: the reference.
 
+File 10 is a spin-wave measurement along a permalloy STRIPE (TR-MOKE style:
+lock-in X + iY against pos_x, one line per excitation frequency, the field only
+in the comment, rf_freq in MHz -- like the lab's old files). Its k(f) is the
+Kalinikos-Slavin lowest mode with the fundamental width mode of a stripe with
+Guslienko's dipolar pinning (STRIPE below), written out HERE on its own, so the
+Spin-wave FFT module is tested against numbers it did not make.
+
 File 8 is 200 nm of YIG, field in the plane, field sweeps at 9-16 GHz: the
 uniform mode and four perpendicular standing spin waves (PSSW n = 1-4) at
 lower field, H_ex,n = 2 A (n pi / d)^2 / Ms = 13, 52, 117, 209 mT for the
@@ -214,6 +221,34 @@ def save(ds: xr.Dataset, path: Path, seconds: float):
     print(f"  {path}  {dict(ds.sizes)}")
 
 
+#: file 10: permalloy stripe, field across it (Damon-Eshbach), width mode n = 1
+STRIPE = dict(Ms=1000.0, A=13.0, d=30.0, w=2.0, B=20.0, L=6.0)
+
+
+def stripe_f(kx):
+    """f (GHz) of the stripe at wavevector kx (rad/um): Kalinikos-Slavin n = 0,
+    Damon-Eshbach geometry, k^2 = kx^2 + ky^2, ky = pi / w_eff (Guslienko)."""
+    p = STRIPE["d"] * 1e-3 / STRIPE["w"]
+    D = 2 * np.pi / (p * (1 + 2 * np.log(1 / p)))
+    ky = np.pi / (STRIPE["w"] * D / (D - 2)) * 1e6
+    kx = np.asarray(kx, dtype=float) * 1e6
+    k2 = kx * kx + ky * ky
+    kd = np.sqrt(k2) * STRIPE["d"] * 1e-9
+    P = 1 - (1 - np.exp(-kd)) / kd
+    ms, b = STRIPE["Ms"] / 1e3, STRIPE["B"] / 1e3
+    lam = 2 * STRIPE["A"] * 1e-12 * 4e-7 * np.pi / ms ** 2
+    sin2 = kx * kx / k2                      # M across the stripe: phi from kx
+    bk = b + ms * lam * k2
+    return G * np.sqrt(bk * (bk + ms * (1 - P * (1 - sin2) + ms * P * (1 - P) * sin2 / bk)))
+
+
+def stripe_k(f):
+    """The inverse: kx (rad/um) at f (GHz), NaN outside the band."""
+    kg = np.linspace(0.0, 40.0, 40001)
+    fg = stripe_f(kg)
+    return np.interp(f, fg, kg, left=np.nan, right=np.nan)
+
+
 def main(argv=None) -> int:
     # reseeded on EVERY run: the files must not depend on how often this was
     # called before in the same process (the tests call it several times, and
@@ -395,6 +430,29 @@ def main(argv=None) -> int:
                    {"type": "array", "param": "field", "values": fields9.tolist()},
                    lin("rf_freq", 2, 18, 16001)], ["s21"])}),
         out / "2026-09-19" / "141500_yig_200nm_vna.nc", 5400.0)
+
+    # 10. spin waves along a permalloy stripe: lock-in vs position, per frequency
+    f10 = np.arange(5000.0, 9001.0, 50.0)              # MHz, like the old files
+    x10 = np.linspace(0.0, 20.0, 201)                  # um from the antenna
+    k10 = stripe_k(f10 / 1000.0)
+    lines = np.zeros((f10.size, x10.size), dtype=complex)
+    for i, k in enumerate(k10):
+        if np.isfinite(k):                              # inside the band: a wave
+            amp = 20.0 * np.exp(-(k / 5.0) ** 2)        # the antenna's k-efficiency
+            lines[i] = amp * np.exp(1j * (k * x10 + PHASE0)) * np.exp(-x10 / STRIPE["L"])
+    lines = lines[:, None, :] + 1.5 + 0.8j + noise((f10.size, 1, x10.size), 0.4)
+    save(xr.Dataset(
+        complex_vars("lockin", ("rf_freq", "pos_y", "pos_x"), lines, "uV"),
+        coords={"rf_freq": coord("rf_freq", f10, "MHz"), "pos_y": coord("pos_y", [0.0], "um"),
+                "pos_x": coord("pos_x", x10, "um")},
+        attrs={"name": "py_stripe_trmoke", "_dims": ["rf_freq", "pos_y", "pos_x"],
+               "comment": "Py 30 nm stripe, 2 um wide; field 20 mT across the stripe "
+                          "(not a scan axis); line scan along it from the antenna",
+               "recipe_json": recipe("py_stripe_trmoke", "", [
+                   lin("rf_freq", 5000, 9000, f10.size), {"type": "array", "param": "pos_y",
+                                                          "values": [0.0]},
+                   lin("pos_x", 0, 20, 201)], ["lockin"])}),
+        out / "2026-09-20" / "101500_py_stripe_trmoke.nc", 3600.0)
     return 0
 
 

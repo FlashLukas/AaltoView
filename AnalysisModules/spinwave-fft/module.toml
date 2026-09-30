@@ -1,0 +1,8 @@
+# What AaltoView's "Analysis" menu shows. Drop this folder into AnalysisModules/
+# and the viewer finds it; see docs/ANALYSIS_MODULES.md.
+[module]
+key = "sw_fft"
+name = "Spin-wave FFT"
+description = "FFT of every line of a map (pos x freq), window + padding, k in rad/um or 1/um; peaks; Kalinikos-Slavin dispersion of a stripe (Guslienko pinning)"
+accepts = ["curves", "maps"]
+python = "sw_fft"           # started as: python -m sw_fft

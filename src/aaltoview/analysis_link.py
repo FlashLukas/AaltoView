@@ -22,11 +22,15 @@ Three questions, three mechanisms:
 * HOW does data get there?  ZeroMQ request/reply with JSON, the same pattern as
   the AaltoFlow instrument services (its docs/DEVELOPER_NOTES.md section 4):
   every request is {"cmd": ...}, every reply {"ok": true, ...} or
-  {"ok": false, "error": ...}. Verbs: describe, add_curves, shutdown.
+  {"ok": false, "error": ...}. Verbs: describe, add_curves, add_maps, shutdown.
 
 A curve travels complete (curve_to_dict): x, the shown y, the COMPLEX values if
 the detector is complex, names, units, label, source file, the Selection and the
 held coordinates -- the frozen Curve of export.py, nothing lost on the way.
+A map travels the same way (map_to_dict): both axes, the shown values, the
+complex map, the reference that was applied. A module that says `accepts =
+["curves", "maps"]` but has no map handler of its own gets it as one curve per
+row (export.map_to_curves); a module that takes only curves is sent those.
 
 No Qt here: tests drive both ends in one process.
 """
@@ -46,7 +50,7 @@ from pathlib import Path
 
 import numpy as np
 
-from .export import Curve, Selection
+from .export import Curve, MapData, Selection, map_to_curves
 
 PROTOCOL = 1
 BEACON_ENV = "AALTOVIEW_ANALYSIS_DIR"      # tests point this at a temp folder
@@ -175,6 +179,7 @@ class Running:
     port: int
     pid: int
     beacon: Path
+    accepts: tuple[str, ...] = ("curves",)      # from `describe`
 
 
 def pid_alive(pid: int) -> bool:
@@ -225,10 +230,12 @@ def running(timeout_ms: int = 400) -> list[Running]:
     out = []
     for r in beacons():
         try:
-            if request(r.port, {"cmd": "describe"}, timeout_ms).get("ok"):
-                out.append(r)
+            d = request(r.port, {"cmd": "describe"}, timeout_ms)
         except Exception:
             continue
+        if d.get("ok"):
+            r.accepts = tuple(d.get("accepts", ("curves",)))
+            out.append(r)
     return out
 
 
@@ -256,6 +263,20 @@ def send_curves(port: int, curves: list[Curve], timeout_ms: int = 5000) -> dict:
                            "curves": [curve_to_dict(c) for c in curves]}, timeout_ms)
     if not reply.get("ok"):
         raise RuntimeError(reply.get("error", "the module refused the curves"))
+    return reply
+
+
+def send_maps(port: int, maps: list[MapData], accepts=("curves", "maps"),
+              timeout_ms: int = 30000) -> dict:
+    """Maps to a module -- as maps if it takes them, else one curve per row.
+    A long timeout: a VNA map is 16 001 x 13 complex numbers of JSON."""
+    if "maps" in accepts:
+        reply = request(port, {"cmd": "add_maps", "protocol": PROTOCOL,
+                               "maps": [map_to_dict(m) for m in maps]}, timeout_ms)
+    else:
+        return send_curves(port, [c for m in maps for c in map_to_curves(m)], timeout_ms)
+    if not reply.get("ok"):
+        raise RuntimeError(reply.get("error", "the module refused the maps"))
     return reply
 
 
@@ -289,6 +310,34 @@ def curve_from_dict(d: dict) -> Curve:
                  z=z, held={k: (float(v), str(u)) for k, (v, u) in d.get("held", {}).items()})
 
 
+def _grid(a) -> list | None:
+    return None if a is None else [_list(row) for row in np.atleast_2d(np.asarray(a, dtype=float))]
+
+
+def map_to_dict(m: MapData) -> dict:
+    z = None if m.z is None else np.asarray(m.z, dtype=complex)
+    return {"x": _list(m.x), "y": _list(m.y), "values": _grid(m.values),
+            "z_real": _grid(z.real) if z is not None else None,
+            "z_imag": _grid(z.imag) if z is not None else None,
+            "label": m.label, "x_name": m.x_name, "x_unit": m.x_unit,
+            "y_name": m.y_name, "y_unit": m.y_unit, "z_name": m.z_name, "z_unit": m.z_unit,
+            "source": m.source, "selection": m.selection.to_dict(), "ref": m.ref,
+            "held": {k: [float(v), u] for k, (v, u) in m.held.items()}}
+
+
+def map_from_dict(d: dict) -> MapData:
+    z = None
+    if d.get("z_real") is not None:
+        z = np.asarray(d["z_real"], dtype=float) + 1j * np.asarray(d["z_imag"], dtype=float)
+    return MapData(x=np.asarray(d["x"], dtype=float), y=np.asarray(d["y"], dtype=float),
+                   values=np.asarray(d["values"], dtype=float), label=d["label"],
+                   x_name=d["x_name"], x_unit=d["x_unit"], y_name=d["y_name"],
+                   y_unit=d["y_unit"], z_name=d["z_name"], z_unit=d["z_unit"],
+                   selection=Selection.from_dict(d["selection"]), source=d.get("source"),
+                   z=z, ref=d.get("ref"),
+                   held={k: (float(v), str(u)) for k, (v, u) in d.get("held", {}).items()})
+
+
 # ─────────────────────────────── the module's end ─────────────────────────────
 
 class Listener:
@@ -302,12 +351,14 @@ class Listener:
 
     `on_curves` is called ON THE LISTENER THREAD with a list of Curve; a Qt
     module turns it into a signal (apps/analysis.py does). The reply goes out at
-    once, so the viewer never waits for a fit.
+    once, so the viewer never waits for a fit. `on_maps` likewise with a list of
+    MapData; without it, maps arrive through on_curves, one curve per row.
     """
 
-    def __init__(self, info: dict | ModuleInfo, on_curves, on_shutdown=None):
+    def __init__(self, info: dict | ModuleInfo, on_curves, on_shutdown=None, on_maps=None):
         self.info = info if isinstance(info, ModuleInfo) else info_from_dict(info)
         self.on_curves = on_curves
+        self.on_maps = on_maps
         self.on_shutdown = on_shutdown
         self.port: int | None = None
         self.title = self.info.name
@@ -380,9 +431,18 @@ class Listener:
                 return {"ok": False, "error": "no curves in the request"}
             self.on_curves(curves)
             return {"ok": True, "n": len(curves), "title": self.title}
+        if cmd == "add_maps":
+            maps = [map_from_dict(d) for d in msg.get("maps", [])]
+            if not maps:
+                return {"ok": False, "error": "no maps in the request"}
+            if self.on_maps is not None:
+                self.on_maps(maps)
+            else:
+                self.on_curves([c for m in maps for c in map_to_curves(m)])
+            return {"ok": True, "n": len(maps), "title": self.title}
         if cmd == "shutdown":
             if self.on_shutdown is not None:
                 self.on_shutdown()
             return {"ok": True}
         return {"ok": False, "error": f"unknown cmd '{cmd}' (have: describe, add_curves, "
-                                      "shutdown)"}
+                                      "add_maps, shutdown)"}

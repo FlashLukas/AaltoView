@@ -28,7 +28,7 @@ from PySide6 import QtCore, QtGui, QtWidgets
 
 from aaltoview.apps.theme import C
 from aaltoview.apps.viewer import TAB10, _float, _plain_axes
-from aaltoview.export import Curve, axis_title, save_figure
+from aaltoview.export import Curve, MapData, axis_title, map_to_curves, save_figure
 
 from . import model as M
 from .dispersion import unit_kind
@@ -441,6 +441,17 @@ class FitWindow(QtWidgets.QWidget):
         if notes and self.template is None:
             msg += "; frequency sweeps: " + ", ".join(sorted(notes))
         self.say(msg)
+
+    def add_maps(self, maps: list[MapData]):
+        """A whole map from the viewer's Map tab: one sweep per row (per value of
+        the map's Y), along its X, each held at its Y value -- so a field x
+        frequency map with X = frequency arrives as one frequency sweep per field,
+        ready for the Dispersion tab. Choose X in the viewer before sending."""
+        curves = [c for m in maps for c in map_to_curves(m)]
+        self.add_curves(curves)
+        m = maps[0]
+        self.say(f"received a map ({m.label}): {len(curves)} sweeps along {m.x_name}, "
+                 f"one per {m.y_name}")
 
     def targets(self) -> list[Entry]:
         """What Fit all works on: the selected curves when there are several,

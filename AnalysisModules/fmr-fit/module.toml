@@ -4,5 +4,5 @@
 key = "fmr_fit"
 name = "FMR fit"
 description = "Complex Lorentzian (VNA): resonance position, linewidth, amplitude, mixing phase; Kittel / anisotropy / damping"
-accepts = ["curves"]
+accepts = ["curves", "maps"]      # a map arrives as one sweep per row
 python = "fmr_fit"          # started as: python -m fmr_fit

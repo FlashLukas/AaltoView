@@ -1,0 +1,26 @@
+[project]
+name = "aaltoview-sw-fft"
+version = "0.1.0"
+description = "AaltoView analysis module: spatial FFT of spin-wave maps, peaks, Kalinikos-Slavin dispersion of a stripe with Guslienko pinning"
+license = "MIT"
+requires-python = ">=3.11"
+dependencies = [
+    "aaltoview[gui]",
+    "scipy>=1.10",       # least_squares for the dispersion fit
+]
+
+# AaltoView finds this module through module.toml (next to this file), not
+# through anything installed: drop the folder into AnalysisModules/.
+
+[project.scripts]
+aaltoview-sw-fft = "sw_fft.__main__:main"
+
+[tool.uv.sources]
+aaltoview = { workspace = true }
+
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]

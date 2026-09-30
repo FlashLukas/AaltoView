@@ -8,10 +8,12 @@ NanoSpin group), the Python successor of the LabVIEW **AaltoView**, whose name i
 any number of dimensions, look at it as a map or as overlaid curves, average what
 you do not need, take a background out (÷ or − a reference line), and send the
 result to a figure, a text file, **Origin** or a **Jupyter notebook**, or into an
-**analysis module**. The first module, **FMR fit**, fits the Kittel mode and
-standing spin waves in field or VNA frequency sweeps, then fits the dispersion
-for γ, M_eff, anisotropy, the exchange stiffness and damping. It reads the `.nc` files the
-AaltoFlow scan engine writes and needs no instruments.
+**analysis module**. **FMR fit** fits the Kittel mode and standing spin waves
+in field or VNA frequency sweeps, then fits the dispersion for γ, M_eff,
+anisotropy, the exchange stiffness and damping. **Spin-wave FFT** transforms
+every line of a position × frequency map into k-space, finds the wavevectors
+and fits a stripe's dispersion (Kalinikos–Slavin, Guslienko pinning). It reads
+the `.nc` files the AaltoFlow scan engine writes and needs no instruments.
 
 ![a 3-D FMR cube: field against frequency at 2 um from the antenna](docs/map.png)
 
@@ -49,7 +51,7 @@ simulated data (see [Try it without lab data](#try-it-without-lab-data)).*
   | Save data | `.dat` / `.csv` with Long Name / Units / Comments header rows; a map as a matrix or XYZ columns |
   | Send to Origin | into a running Origin (or starts one): worksheet + graph, or matrix + colour map |
   | Notebook | a Jupyter notebook that **recomputes** the view from the `.nc` files |
-  | Analysis | (1D plots) the curves into an **analysis module**: see below |
+  | Analysis | the curves (1D plots) or the whole map (Map) into an **analysis module**: see below |
 
 ![spectra from two measurements overlaid](docs/curves.png)
 
@@ -74,8 +76,9 @@ a complex signal are taken coherently.*
 ## Analysis modules
 
 Fits and other analyses are separate programs that the viewer sends curves to
-(**1D plots → Analysis**). Several can be open at once, and a busy or crashed
-module never takes the viewer down. A module is a folder in
+(**1D plots → Analysis**) or whole maps (**Map → Analysis**: the map on
+screen, reference applied, complex values kept). Several can be open at once,
+and a busy or crashed module never takes the viewer down. A module is a folder in
 **`AnalysisModules/`**: drop one in and the viewer lists it. Its packages are
 installed the first time it starts.
 
@@ -87,7 +90,24 @@ installed the first time it starts.
   (`.csv`, clipboard, Origin). Its **Dispersion** tab then fits all the
   resonances with one magnetic model: γ, M_eff, in-plane uniaxial, 4- and
   6-fold anisotropy, PSSW exchange (A) and damping (α, ΔH0). It handles field
-  sweeps at any angle, frequency sweeps, and angle series.
+  sweeps at any angle, frequency sweeps, and angle series. A map sent to it
+  arrives as one sweep per row.
+- **Spin-wave FFT** ([AnalysisModules/spinwave-fft](AnalysisModules/spinwave-fft/README.md)):
+  - the spatial FFT of every line of a map (e.g. lock-in vs pos_x × rf_freq),
+    coherent on complex data, so waves travelling towards +x and −x are
+    separated;
+  - a choice of window, offset removal and zero-padding, with k in rad/µm
+    or 1/µm;
+  - the peaks of every line, exported as a table;
+  - the dispersion fit, Kalinikos–Slavin for a stripe with Guslienko's
+    effective width: μ0Ms, A, thickness, width, field and angle, each fitted
+    or held.
+
+![Spin-wave FFT: every frequency line in k-space, peaks and the fitted dispersion](docs/sw-fft.png)
+
+*The simulated permalloy stripe, sent from the Map tab. The peaks lie on the
+stripe's dispersion, and the fit gives back μ0Ms and the width; the tests check
+that against the numbers the data was made from.*
 
 ![FMR fit: four field sweeps fitted](docs/fmr-fit.png)
 
@@ -131,7 +151,7 @@ directory, if the suite is installed on the same PC).
 ## Try it without lab data
 
 ```bash
-uv run python tools/make_demo_data.py demo_data     # four simulated measurements
+uv run python tools/make_demo_data.py demo_data     # ten simulated measurements
 uv run aaltoview --folder demo_data
 ```
 
@@ -139,8 +159,15 @@ The simulated measurements are a permalloy-like film: the Kittel mode
 f = γ/2π·√(B(B + μ0Ms)), a weaker perpendicular standing spin wave, a linewidth
 growing with frequency, detection phase and noise. They are a field × frequency
 map, a distance × field × frequency cube, a spin-wave image at 8 GHz for three
-fields, and field sweeps at four frequencies. `tools/render_docs.py` regenerates
-them and every screenshot above.
+fields, and field sweeps at four frequencies. Further files cover the
+analysis modules:
+- an anisotropic film measured at 36 in-plane angles;
+- VNA sweeps with a cable background;
+- 200 nm YIG with four standing spin waves, both as field sweeps and as VNA
+  sweeps;
+- a spin-wave line scan along a permalloy stripe.
+
+`tools/render_docs.py` regenerates them and every screenshot above.
 
 ## Without the window
 
