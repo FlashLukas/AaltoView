@@ -14,3 +14,7 @@ demo_data/
 
 # Personal working notes (Claude Code loads them; they stay private)
 CLAUDE.local.md
+
+# profiler output (python -m cProfile -o prof.out ...)
+prof.out
+*.prof
