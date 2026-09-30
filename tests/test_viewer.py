@@ -223,3 +223,29 @@ def test_the_complex_part_choice_follows_the_detector(viewer, tmp_path):
     viewer.set_dataset(ds2, tmp_path / "complex.nc")
     assert c.det_combo.currentText() == "s"
     assert not c.part_combo.isHidden()
+
+
+def test_the_map_divided_by_a_reference_line(viewer):
+    """Reference = one Y line, picked from its values or at the cursor; the
+    values of the axis follow the axis; the 1D cuts stay the raw data."""
+    _open_first(viewer)                                   # x, y; freq held at 1 GHz
+    m = viewer.map
+    m.ref_combo.setCurrentIndex(m.ref_combo.findData("row"))
+    assert not m.ref_value.isHidden() and not m.ref_op.isHidden()
+    assert m.ref_value.currentText() == "20 um"           # the last value by default
+    np.testing.assert_allclose(m._map.z, [[100 / 120, 101 / 121], [110 / 120, 111 / 121],
+                                          [1.0, 1.0]])
+    assert m._map.z_name == "kerr (÷ y = 20 um)" and m._map.z_unit == ""
+    m._place_cursor(0, 0)
+    m._ref_at_cursor()
+    assert m.ref_value.currentText() == "0 um"
+    m.ref_op.setCurrentIndex(m.ref_op.findData("subtract"))
+    np.testing.assert_allclose(m._map.z, [[0, 0], [10, 10], [20, 20]])
+    m._cut("row")
+    assert viewer.lines.curves[-1].y.tolist() == [100.0, 101.0]
+    m.controls.x_combo.setCurrentText("freq")             # the Y axis is now x...
+    m.controls.y_combo.setCurrentText("y")
+    assert m.ref_value.count() == 3
+    m.ref_combo.setCurrentIndex(m.ref_combo.findData("dd_x"))
+    assert m.ref_op.isHidden() and m.ref_value.isHidden()
+    assert m._map.z_unit == "1/GHz"

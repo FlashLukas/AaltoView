@@ -23,8 +23,12 @@ simulated data (see [Try it without lab data](#try-it-without-lab-data)).*
 - **Map** — any two dimensions as X/Y. Every other dimension gets a row: hold it
   at one value (a slider showing the coordinate) or average it (all of it, or a
   range). Colour map, inverse, symmetric limits, automatic (percentile) or typed
-  limits — or drag the colour bar — log, and normalise each row or column. Click
-  to place a cursor; **Row → 1D** / **Column → 1D** send the line through it.
+  limits — or drag the colour bar — log, and normalise each row or column.
+  **Reference**: divide by (or subtract) one line, e.g. a VNA field sweep ÷ the
+  highest field, where the resonance is out of the band; ÷ the median line when
+  no reference was measured; or derivative-divide along X or Y. It is applied
+  to the complex values, so |z| and arg z are of the ratio. Click to place a
+  cursor; **Row → 1D** / **Column → 1D** send the line through it (raw data).
 - **1D plots** — a dashed preview of the current selection. **Add current**, or
   pick a dimension, select several of its values and **Add selected** (one curve
   per value). Curves are frozen copies that remember their file, so curves from
@@ -57,6 +61,8 @@ a complex signal are taken coherently.*
 |---|---|
 | ![normalised, stacked field sweeps](docs/curves-normalised-light.png) | ![map with every line normalised](docs/map-rows-light.png) |
 | Field sweeps at 6–12 GHz, each normalised to its peak and stacked. | The same kind of map with every frequency line scaled to its own peak, so the resonance can be followed where the signal is weak. Light theme. |
+| ![VNA map divided by its reference](docs/map-reference.png) | ![the same, light theme](docs/map-reference-light.png) |
+| |S21| of 200 nm YIG, the field set and the frequency swept, every line ÷ the 800 mT line: the cables, amplifier and delay cancel and the resonance is left, at the 0.1 % level. | The same, light theme. |
 
 ## Analysis modules
 

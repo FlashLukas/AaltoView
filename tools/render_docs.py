@@ -176,6 +176,18 @@ def pose_map_rows(v):
     v.tabs.setCurrentWidget(m)
 
 
+def pose_map_reference(v):
+    """The YIG VNA sweeps as a map, every field line divided by the 800 mT one:
+    the cable/amplifier background and the delay are gone, the modes are left."""
+    select_file(v, "141500_yig_200nm_vna")
+    m = v.map
+    m.controls.x_combo.setCurrentText("rf_freq")
+    m.controls.y_combo.setCurrentText("field")
+    m.ref_combo.setCurrentIndex(m.ref_combo.findData("row"))    # the last: 800 mT
+    m.refresh()
+    v.tabs.setCurrentWidget(m)
+
+
 def shot_fit(app, name: str, theme_name: str):
     """The FMR fit module (AnalysisModules/fmr-fit) with the demo field sweeps, all
     fitted -- what arrives after 1D plots -> Analysis > FMR fit."""
@@ -313,6 +325,8 @@ def main() -> int:
     shot(app, "curves", "dark", pose_curves)
     shot(app, "curves-normalised-light", "light", pose_normalised)
     shot(app, "map-rows-light", "light", pose_map_rows)
+    shot(app, "map-reference", "dark", pose_map_reference)
+    shot(app, "map-reference-light", "light", pose_map_reference)
     shot_fit(app, "fmr-fit", "dark")
     shot_fit(app, "fmr-fit-light", "light")
     shot_dispersion(app, "fmr-dispersion", "dark")

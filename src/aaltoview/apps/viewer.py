@@ -618,6 +618,49 @@ class MapPanel(_Panel):
         st.addStretch(1)
         v.addLayout(st)
 
+        rf = QtWidgets.QHBoxLayout()
+        rf.addWidget(QtWidgets.QLabel("reference"))
+        self.ref_combo = QtWidgets.QComboBox()
+        for key, text in (("none", "none"),
+                          ("row", "one Y line"),
+                          ("column", "one X line"),
+                          ("median_rows", "median of the Y lines"),
+                          ("median_columns", "median of the X lines"),
+                          ("dd_y", "derivative-divide along Y"),
+                          ("dd_x", "derivative-divide along X")):
+            self.ref_combo.addItem(text, key)
+        self.ref_combo.setToolTip(
+            "The map against a background, on the COMPLEX values (before |z| or arg):\n"
+            "  one line: every line ÷ (or −) the line at the value chosen -- e.g. a VNA\n"
+            "    field sweep ÷ the highest field, where the resonance is out of the band;\n"
+            "  median: ÷ the median line -- no reference measured: a resonance that moves\n"
+            "    across the map is in few lines, so the median is the background;\n"
+            "  derivative-divide: (z[k+1] − z[k−1]) / (Δ · z[k]) along the axis\n"
+            "    (Maier-Flaig 2018) -- cancels a background that is slow along it.\n"
+            "The 1D cuts stay the raw data (the FMR fit has its own reference).")
+        rf.addWidget(self.ref_combo)
+        self.ref_value = QtWidgets.QComboBox()
+        self.ref_value.setToolTip("The reference line. Or: place the cursor on the map and "
+                                  "press 'at cursor'.")
+        rf.addWidget(self.ref_value)
+        self.ref_cursor = QtWidgets.QPushButton("at cursor")
+        self.ref_cursor.setToolTip("The reference line through the map cursor.")
+        self.ref_cursor.clicked.connect(self._ref_at_cursor)
+        rf.addWidget(self.ref_cursor)
+        self.ref_op = QtWidgets.QComboBox()
+        self.ref_op.addItem("divide", "divide")
+        self.ref_op.addItem("subtract", "subtract")
+        self.ref_op.setToolTip("Divide: a transmission background (cables, amplifier) "
+                               "multiplies the signal. Subtract: an additive offset.")
+        rf.addWidget(self.ref_op)
+        rf.addStretch(1)
+        v.addLayout(rf)
+        self._ref_axis: tuple | None = None
+        self.ref_combo.currentIndexChanged.connect(self._ref_changed)
+        self.ref_value.currentIndexChanged.connect(self.refresh)
+        self.ref_op.currentIndexChanged.connect(self.refresh)
+        self._ref_enable()
+
         self.glw = pg.GraphicsLayoutWidget()
         self.plot = self.glw.addPlot()
         self.img = pg.ImageItem()
@@ -659,7 +702,50 @@ class MapPanel(_Panel):
                           symmetric=self.symmetric.isChecked(), auto=self.auto.isChecked(),
                           lo=_float(self.lo_edit.text(), 0.0),
                           hi=_float(self.hi_edit.text(), 1.0), log=self.log.isChecked(),
-                          norm=E.MAP_NORMS[self.norm_combo.currentIndex()])
+                          norm=E.MAP_NORMS[self.norm_combo.currentIndex()],
+                          ref=self.ref_combo.currentData(), ref_op=self.ref_op.currentData(),
+                          ref_i=max(self.ref_value.currentIndex(), 0) if self.ref_value.count()
+                          else -1)
+
+    # ---- reference --------------------------------------------------------
+    def _ref_changed(self):
+        self._ref_enable()
+        self._fill_ref_values()
+        self.refresh()
+
+    def _ref_enable(self):
+        mode = self.ref_combo.currentData()
+        one = mode in ("row", "column")
+        self.ref_value.setVisible(one)
+        self.ref_cursor.setVisible(one)
+        self.ref_op.setVisible(mode not in ("none", "dd_y", "dd_x"))
+
+    def _fill_ref_values(self):
+        """The values of the axis the reference line is picked on (Y for a Y
+        line). Refilled only when that axis changes; a new one starts at its
+        LAST value -- the highest field of a sweep, the usual reference."""
+        ds, sel = self.host.ds, self.controls.selection()
+        mode = self.ref_combo.currentData()
+        if ds is None or sel is None or sel.y is None or mode not in ("row", "column"):
+            return
+        dim = sel.y if mode == "row" else sel.x
+        n = V.detector(ds, sel.detector).sizes.get(dim, 0)
+        key = (id(ds), dim, n)
+        if key == self._ref_axis:
+            return
+        self._ref_axis = key
+        self.ref_value.blockSignals(True)
+        self.ref_value.clear()
+        self.ref_value.addItems([V.coord_text(ds, dim, i) for i in range(n)])
+        self.ref_value.setCurrentIndex(n - 1)
+        self.ref_value.blockSignals(False)
+
+    def _ref_at_cursor(self):
+        if self._cursor is None:
+            self.say("Click the map first: the reference is the line through the cursor.")
+            return
+        i, j = self._cursor
+        self.ref_value.setCurrentIndex(j if self.ref_combo.currentData() == "row" else i)
 
     def set_dataset(self, ds):
         self.controls.set_dataset(ds)
@@ -685,6 +771,7 @@ class MapPanel(_Panel):
             self.img.setVisible(False)
             self.say("This detector has one dimension -- see the 1D plots tab.")
             return
+        self._fill_ref_values()
         try:
             got = self.current_map()
         except Exception as exc:
