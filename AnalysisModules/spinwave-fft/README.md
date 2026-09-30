@@ -109,9 +109,10 @@ line's strongest peak:
 - "≥ × highest" still counts against the whole line, so a window over noise
   finds nothing.
 
-**Click a peak to leave it out.** Clicking its circle on the map, or its
-marker on the line plot, turns it into a grey cross and unticks it in the
-Dispersion tab's points; clicking again takes it back. Clicking the map away
+**Click a peak to leave it out.** Clicking its circle on the map, its
+marker on the line plot, or its point on the Dispersion tab's plot turns it
+into a grey cross and unticks it in the Dispersion tab's points; clicking
+again takes it back. Clicking the map away
 from any peak just shows that line below. A peak left out stays out when the
 peaks are found again, as long as it is found at the same place.
 

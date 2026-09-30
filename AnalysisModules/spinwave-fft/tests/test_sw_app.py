@@ -185,3 +185,30 @@ def test_follow_and_click_a_peak_to_leave_it_out(win, stripe_map):
             return far
     win._map_clicked(Away())
     assert all(q.use for q in win.points) and win.line == 5
+
+
+def test_click_a_point_on_the_dispersion_plot_to_leave_it_out(win, stripe_map):
+    from PySide6 import QtCore
+    ds, path, m = stripe_map
+    win.add_maps([m])
+    win.side.setCurrentIndex(win.side.findData("positive"))
+    win.kmin.setText("0.5")
+    win.find_peaks()
+    win.tabs.setCurrentIndex(1)
+    win.resize(1400, 900)
+    win.show()
+    QtWidgets.QApplication.processEvents()
+    j = 30
+    pt = win.points[j]
+    plot = win.dplot.getPlotItem()
+    scene = plot.vb.mapViewToScene(QtCore.QPointF(pt.k, pt.f))
+
+    class Click:
+        def scenePos(self):
+            return scene
+    win._dispersion_clicked(Click())
+    assert not win.points[j].use
+    assert win.ptable.item(j, 0).checkState() == QtCore.Qt.Unchecked
+    assert "left out" in win.status.text()
+    win._dispersion_clicked(Click())
+    assert win.points[j].use
