@@ -186,3 +186,46 @@ def test_the_notebook_reads_the_files_through_the_script(tmp_path):
     assert any("loading script" in "".join(c["source"]) for c in cells
                if c["cell_type"] == "markdown")
     assert Path(sc.path).exists()
+
+
+def test_reload_and_the_rescan_button_keeps_the_choice(viewer, tmp_path):
+    ds, true, d = _trmoke_ds()
+    path = tmp_path / "trmoke.nc"
+    ds.to_netcdf(path, engine="h5netcdf")
+    viewer.reload()
+    assert "no file is open" in viewer.map.status.text()
+    viewer.load_file(path)                                  # as saved
+    combo = viewer.browser.script_combo
+    combo.blockSignals(True)                                # chosen, but not re-read yet
+    combo.setCurrentIndex(combo.findData("TR-MOKE unfold (80 MHz laser)"))
+    combo.blockSignals(False)
+    assert L.ATTR not in viewer.ds.attrs
+    # the rescan button must not throw the choice away
+    rescan = next(b for b in viewer.browser.findChildren(type(viewer.open_btn))
+                  if b.text() == "↻")
+    rescan.click()
+    assert combo.currentData() == "TR-MOKE unfold (80 MHz laser)"
+    reload = next(b for b in viewer.browser.findChildren(type(viewer.open_btn))
+                  if b.text() == "Reload")
+    reload.click()
+    assert viewer.ds.attrs[L.ATTR] == "TR-MOKE unfold (80 MHz laser)"
+
+
+def test_a_script_failing_on_reload_clears_the_old_picture(viewer, tmp_path, monkeypatch):
+    d = tmp_path / "scripts"
+    d.mkdir()
+    (d / "boom.py").write_text("def load(ds, path):\n    raise RuntimeError('no')\n",
+                               encoding="utf-8")
+    monkeypatch.setenv(L.SCRIPTS_ENV, str(d))
+    ds, _, _ = _trmoke_ds()
+    path = tmp_path / "trmoke.nc"
+    ds.to_netcdf(path, engine="h5netcdf")
+    viewer.load_file(path)
+    assert viewer.ds is not None
+    viewer.browser.fill_scripts()
+    combo = viewer.browser.script_combo
+    combo.setCurrentIndex(combo.findData("boom"))           # re-reads the open file: fails
+    assert viewer.ds is None and not viewer.map.img.isVisible()
+    assert "NOT shown" in viewer.current.text()
+    combo.setCurrentIndex(0)                                # back to none: shown as saved
+    assert viewer.ds is not None

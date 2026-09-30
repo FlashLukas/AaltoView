@@ -180,13 +180,42 @@ class FFTWindow(QtWidgets.QWidget):
         self.kmax.setPlaceholderText("no limit")
         self.min_rel = QtWidgets.QDoubleSpinBox(); self.min_rel.setRange(0, 1)
         self.min_rel.setSingleStep(0.05); self.min_rel.setValue(0.1)
-        self.min_rel.setToolTip("A peak must reach this fraction of the line's highest.")
+        self.min_rel.setToolTip(
+            "A peak must be at least this fraction of the line's own highest point (in the\n"
+            "allowed |k| range and side): 0.2 = at least 20 % of it. It keeps small side\n"
+            "bumps out, but on a line with NO wave the highest noise bump still passes --\n"
+            "for that, use '≥ × noise'.")
+        self.min_snr = QtWidgets.QDoubleSpinBox(); self.min_snr.setRange(0, 1000)
+        self.min_snr.setSingleStep(0.5); self.min_snr.setValue(0.0)
+        self.min_snr.setSpecialValueText("off")
+        self.min_snr.setToolTip(
+            "Signal to noise: a peak must be at least this many times the line's noise --\n"
+            "the median |FFT| over the allowed |k| range (a peak is a few bins, the rest is\n"
+            "the noise floor). A line with no wave then gets no peak. 3-5 is a good start;\n"
+            "the peak table lists each peak's SNR. 0 = off.")
         for i, (lab, w) in enumerate([("peaks per line", self.n_peaks), ("side", self.side),
                                       ("|k| from", self.kmin), ("|k| to", self.kmax),
-                                      ("≥ × highest", self.min_rel)]):
+                                      ("≥ × highest", self.min_rel), ("≥ × noise", self.min_snr)]):
             g.addWidget(QtWidgets.QLabel(lab), i // 2, 2 * (i % 2))
             g.addWidget(w, i // 2, 2 * (i % 2) + 1)
         lv.addLayout(g)
+        row = QtWidgets.QHBoxLayout()
+        self.follow = QtWidgets.QCheckBox("follow the last peak, within ±")
+        self.follow.setToolTip(
+            "Follow a branch: on each line, look only within ± this bandwidth (in the k unit)\n"
+            "of the peak found on the line before. It starts on the line shown below the\n"
+            "map -- click a line with a clear peak first -- and walks out in both directions.\n"
+            "A line with nothing in the window keeps the last position.")
+        self.follow_w = QtWidgets.QLineEdit("0.5")
+        self.follow_w.setToolTip("The bandwidth, in the axis unit (rad/µm or 1/µm).")
+        self.follow_w.setMaximumWidth(80)
+        row.addWidget(self.follow)
+        row.addWidget(self.follow_w)
+        row.addStretch(1)
+        lv.addLayout(row)
+        hint = QtWidgets.QLabel("click a peak on the map to leave it out (again: take it back)")
+        hint.setStyleSheet(f"color:{C['muted']}; font-size:11px;")
+        lv.addWidget(hint)
         self.peaks_btn = QtWidgets.QPushButton("Find peaks")
         self.peaks_btn.setObjectName("primary")
         self.peaks_btn.clicked.connect(self.find_peaks)
@@ -355,7 +384,7 @@ class FFTWindow(QtWidgets.QWidget):
                               k_min=_float(self.kmin.text(), 0.0),
                               k_max=_float(self.kmax.text(), np.inf) if self.kmax.text().strip()
                               else np.inf,
-                              min_rel=self.min_rel.value())
+                              min_rel=self.min_rel.value(), min_snr=self.min_snr.value())
 
     def _guard(self, what, fn):
         try:
@@ -444,7 +473,7 @@ class FFTWindow(QtWidgets.QWidget):
         self.spectrum = sp
         if old_unit != sp.k_unit:            # the |k| range is typed in the axis unit
             f = 1 / (2 * np.pi) if sp.k_unit == "1/um" else 2 * np.pi
-            for edit in (self.kmin, self.kmax):
+            for edit in (self.kmin, self.kmax, self.follow_w):
                 if edit.text().strip():
                     edit.setText(f"{_float(edit.text(), 0.0) * f:.4g}")
         if self.peaks:                       # settings changed: find them again
@@ -477,12 +506,25 @@ class FFTWindow(QtWidgets.QWidget):
         inp, sp = self.current(), self.spectrum
         if inp is None or sp is None:
             return
-        self.peaks = F.all_peaks(sp, self.peak_settings())
+        ps = self.peak_settings()
+        width = _float(self.follow_w.text(), float("nan"))
+        follow = self.follow.isChecked()
+        if follow and not width > 0:
+            self.say("follow the last peak: type a bandwidth > 0 (in the k unit)", error=True)
+            return
+        seed = min(max(self.line, 0), len(inp.y) - 1)
+        if follow:
+            self.peaks = F.track_peaks(sp, ps, width, seed=seed,
+                                       order=np.argsort(np.asarray(inp.y), kind="stable"))
+        else:
+            self.peaks = F.all_peaks(sp, ps)
         self._make_points()
         self._redraw()
         n_lines = len({p.line for p in self.peaks})
         if not quiet:
-            self.say(f"{len(self.peaks)} peaks in {n_lines} of {len(inp.y)} lines"
+            how = (f", following from {inp.line_label(seed)} within ±{width:g} "
+                   f"{R.k_title(sp.k_unit)[1]}" if follow else "")
+            self.say(f"{len(self.peaks)} peaks in {n_lines} of {len(inp.y)} lines{how}"
                      + ("" if n_lines == len(inp.y) else
                         " (lines without a peak above the threshold have none)"))
 
@@ -508,11 +550,48 @@ class FFTWindow(QtWidgets.QWidget):
         self.mplot.setLabel("bottom", axis_title(m.x_name, m.x_unit))
         self.mplot.setLabel("left", axis_title(m.y_name, m.y_unit))
         self.mplot.setTitle(m.z_name, size="9pt")
-        self.peak_scatter.setData([p.k for p in self.peaks],
-                                  [inp.y[p.line] for p in self.peaks])
+        self._draw_peaks(inp)
         self._draw_model_on_map(inp, sp)
         self._draw_line()
         self._draw_dispersion()
+
+    def _used(self, i: int) -> bool:
+        return self.points[i].use if i < len(self.points) else True
+
+    def _draw_peaks(self, inp):
+        """Used peaks as circles, left-out ones as grey crosses."""
+        used = [self._used(i) for i in range(len(self.peaks))]
+        self.peak_scatter.setData(
+            [p.k for p in self.peaks], [inp.y[p.line] for p in self.peaks],
+            symbol=["o" if u else "x" for u in used],
+            pen=[pg.mkPen(C["accent"] if u else C["muted"], width=1.2) for u in used],
+            brush=[None] * len(used), size=[6 if u else 8 for u in used])
+
+    def toggle_peak(self, i: int):
+        """Leave peak i out of the dispersion -- or take it back."""
+        if not 0 <= i < len(self.points):
+            return
+        p = self.points[i]
+        p.use = not p.use
+        self._fill_points()
+        self._draw_peaks(self.current())
+        self._draw_line()
+        self._draw_dispersion()
+        self.say(f"{p.label}, k = {p.k:.4g} rad/µm: {'used' if p.use else 'left out'}  "
+                 f"({sum(q.use for q in self.points)} of {len(self.points)} peaks used)")
+
+    def _nearest_peak(self, plot, scene_pos, xy_of, candidates, px: float = 8.0):
+        """The peak index whose marker is within px pixels of a click, or None."""
+        best, dist = None, px
+        for i in candidates:
+            x, y = xy_of(i)
+            if not (np.isfinite(x) and np.isfinite(y)):
+                continue
+            sp_ = plot.vb.mapViewToScene(QtCore.QPointF(x, y))
+            d = float(np.hypot(sp_.x() - scene_pos.x(), sp_.y() - scene_pos.y()))
+            if d < dist:
+                best, dist = i, d
+        return best
 
     def _draw_model_on_map(self, inp, sp):
         """The fitted f(k) on the FFT map -- when its y axis is the frequency."""
@@ -538,13 +617,15 @@ class FFTWindow(QtWidgets.QWidget):
         i = min(max(self.line, 0), len(inp.y) - 1)
         mag = R.shown(sp, self.show_.currentData())[i]
         self.lplot.plot(sp.k, mag, pen=pg.mkPen(C["accent"], width=1.5))
-        mine = [p for p in self.peaks if p.line == i]
+        idx = [j for j, p in enumerate(self.peaks) if p.line == i]
+        mine = [self.peaks[j] for j in idx]
         if mine:
-            vals = [p.amplitude if self.show_.currentData() == "abs" else
-                    (p.amplitude ** 2 if self.show_.currentData() == "power"
-                     else np.log10(p.amplitude)) for p in mine]
-            self.lplot.addItem(pg.ScatterPlotItem([p.k for p in mine], vals, size=9,
-                                                  pen=pg.mkPen(C["text"]), brush=None))
+            vals = [self._shown_amp(p) for p in mine]
+            used = [self._used(j) for j in idx]
+            self.lplot.addItem(pg.ScatterPlotItem(
+                [p.k for p in mine], vals, size=[9 if u else 10 for u in used],
+                symbol=["o" if u else "x" for u in used],
+                pen=[pg.mkPen(C["text"] if u else C["muted"]) for u in used], brush=None))
         self.hline.setPos(inp.y[i])
         kn, ku = R.k_title(sp.k_unit)
         self.lplot.setLabel("bottom", axis_title(kn, ku))
@@ -552,18 +633,41 @@ class FFTWindow(QtWidgets.QWidget):
         txt = ", ".join(f"k = {p.k:.4g} (λ = {self._lam(p.k, sp):.3g} µm)" for p in mine)
         self.readout.setText(f"{inp.line_label(i)}:  {txt or 'no peak'}")
 
+    def _shown_amp(self, p) -> float:
+        show = self.show_.currentData()
+        return (p.amplitude if show == "abs" else
+                p.amplitude ** 2 if show == "power" else np.log10(p.amplitude))
+
     @staticmethod
     def _lam(k, sp):
         full = 2 * np.pi if sp.k_unit == "rad/um" else 1.0
         return full / abs(k) if k else float("nan")
 
     def _map_clicked(self, ev):
+        """On a peak (map or line plot): leave it out / take it back. Elsewhere
+        on the map: show that line below."""
         inp = self.current()
-        if inp is None or not self.mplot.sceneBoundingRect().contains(ev.scenePos()):
+        if inp is None:
             return
-        y = self.mplot.vb.mapSceneToView(ev.scenePos()).y()
-        self.line = int(np.nanargmin(np.abs(np.asarray(inp.y) - y)))
-        self._draw_line()
+        pos = ev.scenePos()
+        if self.mplot.sceneBoundingRect().contains(pos):
+            hit = self._nearest_peak(self.mplot, pos,
+                                     lambda j: (self.peaks[j].k, inp.y[self.peaks[j].line]),
+                                     range(len(self.peaks)))
+            y = self.mplot.vb.mapSceneToView(pos).y()
+            self.line = (self.peaks[hit].line if hit is not None
+                         else int(np.nanargmin(np.abs(np.asarray(inp.y) - y))))
+            if hit is not None:
+                self.toggle_peak(hit)            # redraws the line too
+            else:
+                self._draw_line()
+        elif self.lplot.sceneBoundingRect().contains(pos):
+            idx = [j for j, p in enumerate(self.peaks) if p.line == self.line]
+            hit = self._nearest_peak(self.lplot, pos,
+                                     lambda j: (self.peaks[j].k,
+                                                self._shown_amp(self.peaks[j])), idx)
+            if hit is not None:
+                self.toggle_peak(hit)
 
     # ── dispersion ─────────────────────────────────────────────────────────
     def _fill_sources(self, inp: I.Input):

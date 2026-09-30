@@ -136,3 +136,64 @@ def test_unfold_puts_a_dashed_v_back_on_one_branch():
     ok = (np.abs(d) > 0) & (np.abs(d) < 40)                      # on a harmonic / half-way: no sign
     signs = np.sign([F.find_peaks(sp.k, m, F.PeakSettings())[0].k for m in sp.magnitude])
     assert np.all(signs[ok] < 0)
+
+
+# ─────────────────────────────── following a branch ───────────────────────────
+
+def test_follow_stays_on_the_branch_a_stronger_line_elsewhere_cannot_pull_it():
+    """A rising branch plus, on every line, a STRONGER stationary line at
+    k = -6 (another mode, a leak). Free search takes the strong one on each
+    line; following from a line on the branch stays on the branch -- through
+    a gap of three lines without it."""
+    x = np.linspace(0, 40, 321)
+    n = 30
+    kb = np.linspace(1.0, 4.0, n)                                # the branch
+    rows = []
+    for i, k in enumerate(kb):
+        v = 3.0 * _wave(-6.0, x)
+        if not 12 <= i <= 14:                                    # a gap
+            v = v + _wave(k, x)
+        rows.append(v)
+    sp = F.spectra(x, rows, F.Settings())
+    free = F.all_peaks(sp, F.PeakSettings())
+    assert all(abs(p.k + 6.0) < 0.05 for p in free)              # the strong line wins
+    # the seed line's own strongest is -6: the branch is picked by restricting
+    # the side, as an operator would
+    got = F.track_peaks(sp, F.PeakSettings(side="positive"), width=0.5, seed=0,
+                        order=range(n))
+    by_line = {p.line: p.k for p in got}
+    assert set(by_line) == set(range(n)) - {12, 13, 14}          # nothing made up in the gap
+    for i, k in by_line.items():
+        assert k == pytest.approx(kb[i], abs=0.03), i
+    # the same from the middle, walking out both ways
+    order = list(range(n))
+    got = F.track_peaks(sp, F.PeakSettings(side="positive"), width=0.5, seed=20, order=order)
+    assert {p.line for p in got} == set(range(n)) - {12, 13, 14}
+
+
+def test_follow_the_strongest_line_when_no_seed_is_given():
+    x = np.linspace(0, 40, 321)
+    rows = [_wave(2.0 + 0.05 * i, x, 1.0 + (i == 7)) for i in range(15)]
+    sp = F.spectra(x, rows, F.Settings())
+    got = F.track_peaks(sp, F.PeakSettings(), width=0.3)
+    assert [p.line for p in got] == list(range(15))
+    assert [p.k for p in got] == pytest.approx([2.0 + 0.05 * i for i in range(15)], abs=0.02)
+
+
+def test_a_peak_must_stand_above_the_noise():
+    """Lines of pure noise, and lines with a wave 1 x and 10 x the noise:
+    '≥ × highest' finds a 'peak' on every line (the highest noise bump passes);
+    '≥ × noise' keeps only the waves that stand out."""
+    rng = np.random.default_rng(5)
+    x = np.linspace(0, 40, 321)
+    noise = lambda: (rng.normal(size=x.size) + 1j * rng.normal(size=x.size)) / np.sqrt(2)
+    rows = [noise() for _ in range(5)]                                   # nothing
+    rows += [noise() + 0.05 * _wave(2.5, x) for _ in range(5)]           # buried
+    rows += [noise() + 1.0 * _wave(2.5, x) for _ in range(5)]            # clear
+    sp = F.spectra(x, rows, F.Settings())
+    loose = F.all_peaks(sp, F.PeakSettings(min_rel=0.2))
+    assert {p.line for p in loose} == set(range(15))
+    strict = F.all_peaks(sp, F.PeakSettings(min_rel=0.2, min_snr=5.0))
+    assert {p.line for p in strict} == set(range(10, 15))
+    assert all(p.k == pytest.approx(2.5, abs=0.05) and p.snr > 5 for p in strict)
+    assert max(p.snr for p in loose if p.line < 5) < 5                   # noise: SNR ~2-4
