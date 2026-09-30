@@ -306,16 +306,9 @@ def all_peaks(sp: Spectrum, ps: PeakSettings) -> list[Peak]:
 REP_RATES = (80.0, 100.0)
 
 
-def alias(f_ghz, f_rep_mhz: float) -> np.ndarray:
-    """The frequency (MHz) a pulsed laser of repetition rate f_rep samples a
-    precession at f down to: f - n f_rep, n the nearest harmonic, in
-    (-f_rep/2, +f_rep/2]."""
-    f = np.asarray(f_ghz, dtype=float) * 1e3
-    d = np.mod(f + f_rep_mhz / 2, f_rep_mhz) - f_rep_mhz / 2
-    # to 1 Hz: 6.6 GHz from 6600 MHz is 6600.000000000001 MHz, whose alias
-    # would be -39.99999 instead of the half-way 40 (no direction, not flipped)
-    d = np.round(d, 6)
-    return np.where(d == -f_rep_mhz / 2, f_rep_mhz / 2, d)
+#: the alias of a pulsed laser -- ONE definition, shared with AaltoView's
+#: loading scripts (aaltoview/loading.py), so the two unfolds cannot disagree
+from aaltoview.loading import alias  # noqa: E402
 
 
 def unfold(rows, f_ghz, f_rep_mhz: float, invert: bool = False):

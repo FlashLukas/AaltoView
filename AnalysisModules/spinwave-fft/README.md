@@ -63,6 +63,10 @@ the FFT, so every line keeps the wave's true direction:
   direction. With 10 MHz steps and an 80 MHz laser that is 2 lines in 8.
 - **The status line** says how many lines were conjugated, or why the unfold is
   off.
+- **Unfold only once.** The viewer can do the same correction when a file is
+  loaded (**load with → TR-MOKE unfold**, `LoadingScripts/`). Data loaded
+  that way is already unfolded, so leave this switch **off** for it;
+  unfolding twice undoes the correction.
 
 The spectrum is **normalised by the sum of the window**: a pure wave of
 amplitude A gives |F(k₀)| = A whatever the window, length or padding. Uneven

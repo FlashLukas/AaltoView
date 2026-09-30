@@ -73,6 +73,23 @@ a complex signal are taken coherently.*
 | ![VNA map divided by its reference](docs/map-reference.png) | ![the same, light theme](docs/map-reference-light.png) |
 | |S21| of 200 nm YIG, the field set and the frequency swept, every line ÷ the 800 mT line: the cables, amplifier and delay cancel, and the uniform mode and the weaker PSSW are left. | The same, light theme. |
 
+## Loading scripts
+
+Some files need a correction before anything looks at them. A **loading
+script** does it as the file is read: choose one in **load with** (Files
+panel, above the file list) and every file you open goes through it. The map,
+the 1D plots, every export, the notebook (it loads through the same script)
+and the analysis modules all see the corrected data. The status line says
+which script was used, and a script that fails shows nothing rather than an
+uncorrected file.
+
+Scripts are `.py` files in **`LoadingScripts/`**: drop one in and it is
+listed. The folder's [README](LoadingScripts/README.md) has the three-line
+contract. Two come with AaltoView: **TR-MOKE unfold (80 MHz laser)** and
+**(100 MHz laser)**. They undo the laser's aliasing, which conjugates the
+complex lock-in signal on half of the frequencies (a spatial FFT then shows a
+dashed V instead of one branch).
+
 ## Analysis modules
 
 Fits and other analyses are separate programs that the viewer sends curves to

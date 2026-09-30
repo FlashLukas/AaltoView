@@ -27,6 +27,10 @@ NanoSpin group, Aalto University. Read `README.md` first.
   FFT, Kalinikos-Slavin stripe dispersion). A map goes over the wire as
   `export.MapData` (`add_maps`). How to write one: `docs/ANALYSIS_MODULES.md`;
   `tools/new_analysis_module.py`.
+- `src/aaltoview/loading.py` + `LoadingScripts/` -- "load with a script": a
+  drop-in .py with `load(ds, path) -> ds`, applied as every file is read (the
+  viewer's "load with" list; the notebook loads through it too). TR-MOKE unfold
+  (80 / 100 MHz) is the first. No Qt.
 - AaltoFlow's scan-core imports `view`, `data` and `apps.theme` from here: ONE
   copy of the code, and the SAME `COLORS` dict for both apps.
 

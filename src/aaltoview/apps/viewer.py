@@ -112,6 +112,7 @@ class FileBrowser(QtWidgets.QWidget):
     """A data folder, its measurements newest first, and the selected one's header."""
 
     fileChosen = QtCore.Signal(str)
+    scriptChanged = QtCore.Signal()
     COLS = ("Measurement", "Measured", "Axes (outer → inner)", "Shape", "Detectors")
 
     def __init__(self, folder: Path | None = None):
@@ -140,6 +141,24 @@ class FileBrowser(QtWidgets.QWidget):
         row.addWidget(refresh)
         v.addLayout(row)
 
+        # "load with a script": a correction applied to every file as it is
+        # read (aaltoview/loading.py; the scripts sit in LoadingScripts/)
+        row = QtWidgets.QHBoxLayout()
+        row.addWidget(QtWidgets.QLabel("load with"))
+        self.script_combo = QtWidgets.QComboBox()
+        self.script_combo.setToolTip(
+            "A loading script corrects every file as it is read (e.g. TR-MOKE unfold):\n"
+            "the map, the 1D plots, the exports, the notebook and the analysis modules\n"
+            "all get the corrected data. Scripts: the LoadingScripts folder.")
+        self.script_combo.currentIndexChanged.connect(lambda *_: self.scriptChanged.emit())
+        row.addWidget(self.script_combo, 1)
+        rescan = QtWidgets.QPushButton("↻"); rescan.setFixedWidth(32)
+        rescan.setToolTip("Look for new scripts in the LoadingScripts folder")
+        rescan.clicked.connect(self.fill_scripts)
+        row.addWidget(rescan)
+        v.addLayout(row)
+        self.fill_scripts()
+
         self.filter_edit = QtWidgets.QLineEdit()
         self.filter_edit.setPlaceholderText("filter: name, axis or detector…")
         self.filter_edit.textChanged.connect(self._apply_filter)
@@ -159,6 +178,31 @@ class FileBrowser(QtWidgets.QWidget):
         self.info.setPlaceholderText("Select a file to see what is in it. "
                                      "Double-click to open it.")
         v.addWidget(self.info, 2)
+
+    # ---- loading script ---------------------------------------------------
+    def fill_scripts(self, select: str | None = None) -> None:
+        """none + every script in LoadingScripts/, the current choice kept."""
+        from .. import loading as L
+        keep = select if select is not None else self.script_combo.currentData()
+        self.script_combo.blockSignals(True)
+        self.script_combo.clear()
+        self.script_combo.addItem("none (as saved)", None)
+        for sc in L.available():
+            self.script_combo.addItem(sc.name, sc.name)
+            self.script_combo.setItemData(self.script_combo.count() - 1,
+                                          f"{sc.description}\n{sc.path}",
+                                          QtCore.Qt.ToolTipRole)
+        i = self.script_combo.findData(keep) if keep else 0
+        self.script_combo.setCurrentIndex(max(i, 0))
+        self.script_combo.blockSignals(False)
+        if keep and i < 0:
+            self.scriptChanged.emit()           # the chosen script is gone: back to none
+
+    def loading_script(self):
+        """The chosen script (loading.Script), or None."""
+        from .. import loading as L
+        name = self.script_combo.currentData()
+        return L.find(name) if name else None
 
     # ---- folder -----------------------------------------------------------
     def set_folder(self, folder, refresh: bool = True, remember: bool = False) -> None:
@@ -550,6 +594,9 @@ class _Panel(QtWidgets.QWidget):
         kw = self._guard("notebook", self.notebook_kwargs)
         if kw is None:
             return
+        sc = self.host.loading_script if hasattr(self.host, "loading_script") else None
+        if sc is not None:                      # the notebook loads the files the same way
+            kw["loading_script"] = str(sc.path)
         path = self._ask_path("Save notebook", ".ipynb", "Jupyter notebook (*.ipynb)")
         if path and self._guard("notebook", lambda: E.write_notebook(path, **kw)):
             self.say(f"saved {path} -- open it in Jupyter or VS Code and run all cells")
@@ -1417,6 +1464,7 @@ class ViewerWidget(QtWidgets.QWidget):
         split = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
         self.browser = FileBrowser(folder)
         self.browser.fileChosen.connect(self.load_file)
+        self.browser.scriptChanged.connect(self._script_changed)
         split.addWidget(self.browser)
         self.tabs = QtWidgets.QTabWidget()
         self.map = MapPanel(self)
@@ -1494,7 +1542,37 @@ class ViewerWidget(QtWidgets.QWidget):
         except Exception as exc:
             self.map.say(f"Could not read {Path(path).name}: {exc}", error=True)
             return
+        script = self.browser.loading_script()
+        if script is not None:
+            from .. import loading as L
+            try:
+                data = L.run(script, data, path)
+            except Exception as exc:
+                # NOT shown uncorrected: a map that looks right but is not
+                # would be worse than none
+                self.map.say(f"{Path(path).name}: the loading script '{script.name}' "
+                             f"failed: {exc}  (load with: none shows the file as saved)",
+                             error=True)
+                return
         self.set_dataset(data, Path(path))
+        if script is not None:
+            note = data.attrs.get("tr_moke_unfold", "")
+            self.current.setText(f"{Path(path).name}   ·   loaded with {script.name}")
+            self.map.say(f"loaded with {script.name}" + (f": {note}" if note else ""))
+
+    @property
+    def loading_script(self):
+        return self.browser.loading_script()
+
+    def set_loading_script(self, name: str | None) -> None:
+        """Choose a script by name (None: none) -- at start, the one used last."""
+        self.browser.fill_scripts(select=name or "")
+
+    def _script_changed(self):
+        sc = self.browser.loading_script()
+        remember_script(sc.name if sc else "")
+        if self.path is not None and self.path.exists():
+            self.load_file(self.path)            # the open file, read again with it
 
     def _open_dialog(self):
         start = str(self.path.parent if self.path else (self.default_dir or ""))
@@ -1550,6 +1628,14 @@ def remember_folder(folder: Path) -> None:
     _settings().setValue("folder", str(folder))
 
 
+def remember_script(name: str) -> None:
+    _settings().setValue("loading_script", name)
+
+
+def last_script() -> str:
+    return str(_settings().value("loading_script") or "")
+
+
 def start_folder(explicit: str | None) -> Path:
     """Which folder to list at start, most specific first:
     --folder; the folder chosen here last time; the measurement suite's data
@@ -1596,6 +1682,9 @@ def main(argv=None) -> int:
     apply(app)
     apply_window_icon(app)
     win = ViewerWindow(folder, Path(args.file) if args.file else None)
+    # the loading script used last time -- here, not in ViewerWindow, so a
+    # test or tools/render_docs.py never inherits the operator's choice
+    win.viewer.set_loading_script(last_script())
     win.show()
     return app.exec()
 
