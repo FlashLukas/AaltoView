@@ -572,6 +572,8 @@ class DispersionTab(QtWidgets.QWidget):
         """The curves not fitted by hand, from this dispersion (asked for
         2026-09-30: fit three by hand, fit the dispersion roughly, and let it
         place and bound the peaks of all the others)."""
+        if self.owner.request_stop():                # the button is Stop while it runs
+            return
         if self.dres is None:
             self.say("Fit the dispersion first: fit a few curves by hand, set their roles, "
                      "Fit here -- then predict the others from it.", error=True)
@@ -594,9 +596,12 @@ class DispersionTab(QtWidgets.QWidget):
         tight = self.pred_bounds.currentData() == "tight"
         n_lw = self.pred_width.value()
         done, skipped = [], []
-        QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.WaitCursor)
+        owner._batch_begin([self.pred_btn])
         try:
-            for e in targets:
+            for k, e in enumerate(targets, 1):
+                if done and not owner._batch_step(k - 1, len(targets), done[-1],
+                                                  "predicted and fitted"):
+                    break
                 owner._take_template(e)
                 preds, why = D.predict(e.curve, sources, self.dres, self.damp, widths)
                 if not preds:
@@ -616,7 +621,7 @@ class DispersionTab(QtWidgets.QWidget):
                     self.roles[(id(e), k)] = p.role
                 done.append(e)
         finally:
-            QtWidgets.QApplication.restoreOverrideCursor()
+            owner._batch_end()
         owner._after_fit(done)
         self.refresh()
         if done and self.pred_refit.isChecked():
