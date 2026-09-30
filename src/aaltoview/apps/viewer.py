@@ -81,6 +81,23 @@ def _pg_cmap(name: str, invert: bool) -> pg.ColorMap:
     return cmap
 
 
+#: above this many points a line is drawn WITHOUT antialiasing
+LONG_CURVE = 2000
+
+
+def _fast(item: pg.PlotDataItem, n: int) -> None:
+    """A long curve drawn fast. Antialiasing a noisy 16001-point VNA sweep --
+    arg of a difference jumps +-pi at every point, or a curve divided by itself
+    fills a 1e-15 view with rounding noise -- is a full-height zigzag that took
+    Qt 13.5 s per repaint (0.05 s without); the window froze (2026-09-30). At
+    2000+ points in a plot the smoothing is invisible anyway."""
+    item.setDownsampling(auto=True, method="peak")      # min + max per pixel column
+    item.setClipToView(True)
+    # on the PlotDataItem too: it hands its own value down at every update
+    item.opts["antialias"] = item.curve.opts["antialias"] = n <= LONG_CURVE
+    item.curve.update()
+
+
 def _plain_axes(plot: pg.PlotItem, *extra: pg.AxisItem) -> None:
     """No automatic SI prefixes. pyqtgraph would relabel a volt axis
     "V (x0.001)" and a frequency already in MHz "kMHz"; the numbers should be
@@ -978,8 +995,10 @@ class LinePanel(_Panel):
         self.plot = self.glw.addPlot()
         self.legend = self.plot.addLegend(offset=(-10, 10))
         _plain_axes(self.plot)
-        self.preview = pg.PlotDataItem(pen=pg.mkPen(C["muted"], width=1.5,
-                                                    style=QtCore.Qt.DashLine))
+        # SOLID grey, not dashed: Qt dashes along the whole path, and a noisy
+        # 16001-point sweep is millions of pixels of it (9 s per repaint even
+        # without antialiasing; see _fast)
+        self.preview = pg.PlotDataItem(pen=pg.mkPen(C["muted"], width=1.2))
         self.plot.addItem(self.preview)
         self._items: list[pg.PlotDataItem] = []
         self._range_key = None
@@ -995,7 +1014,7 @@ class LinePanel(_Panel):
         sv.addWidget(tag)
         self.add_btn = QtWidgets.QPushButton("Add current")
         self.add_btn.setObjectName("primary")
-        self.add_btn.setToolTip("Freeze the dashed preview as a curve.")
+        self.add_btn.setToolTip("Freeze the grey preview as a curve.")
         self.add_btn.clicked.connect(self.add_current)
         sv.addWidget(self.add_btn)
         along = QtWidgets.QHBoxLayout()
@@ -1241,6 +1260,7 @@ class LinePanel(_Panel):
                                    symbolSize=4, symbolBrush=col, symbolPen=None,
                                    name=c.label, connect="finite")
             self.plot.addItem(item)
+            _fast(item, len(c.x))               # after addItem: clipToView needs the view
             self._items.append(item)
 
         preview = None
@@ -1254,6 +1274,7 @@ class LinePanel(_Panel):
         if preview is not None:
             y = E.normalize(preview.y, norm) + len(shown) * off
             self.preview.setData(preview.x, y, connect="finite")
+            _fast(self.preview, len(preview.x))
             self.legend.addItem(self.preview, f"preview: {preview.label}")
         else:
             self.preview.setData([], [])
@@ -1276,10 +1297,28 @@ class LinePanel(_Panel):
                self.logy.isChecked())
         if shown:
             if key != self._range_key:
-                self.plot.autoRange(items=self._items)
+                self._fit_to(self._items)
         elif has_preview:
-            self.plot.autoRange(items=[self.preview])
+            self._fit_to([self.preview])
         self._range_key = key
+
+    def _fit_to(self, items):
+        """autoRange, but never narrower than 1e-6 of the values: a curve divided
+        by ITSELF is 1 +- 1e-16, and pyqtgraph's tick loop never ends once its
+        spacing is below the float precision of the numbers -- the viewer froze
+        (2026-09-30). The zoom is limited the same way."""
+        vb = self.plot.vb
+        vb.setLimits(minXRange=None, minYRange=None)
+        self.plot.autoRange(items=items)
+        limits = {}
+        for axis, (lo, hi) in zip("XY", vb.viewRange()):
+            mid, scale = (lo + hi) / 2, max(abs(lo), abs(hi))
+            floor = max(scale * 1e-9, 1e-300)
+            if not (np.isfinite(hi - lo) and hi - lo >= scale * 1e-6):
+                d = max(scale * 1e-3, 1e-12)
+                (vb.setXRange if axis == "X" else vb.setYRange)(mid - d, mid + d, padding=0)
+            limits[f"min{axis}Range"] = floor
+        vb.setLimits(**limits)
 
     def _hover(self, pos):
         if not self.plot.sceneBoundingRect().contains(pos):
@@ -1298,7 +1337,7 @@ class LinePanel(_Panel):
         return f"{self.host.stem()}_curves"
 
     def analysis_curves(self) -> list[E.Curve]:
-        """The visible curves -- or, with none frozen yet, the dashed preview:
+        """The visible curves -- or, with none frozen yet, the grey preview:
         sending one sweep should not need an "Add current" first."""
         shown = [c for c in self.curves if c.visible]
         if shown:

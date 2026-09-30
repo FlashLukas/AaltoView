@@ -288,3 +288,47 @@ def test_the_1d_view_fits_the_visible_curves(viewer):
     lines.table.topLevelItem(0).setCheckState(0, QtCore.Qt.Unchecked)
     lo, hi = lines.plot.vb.viewRange()[1]
     assert -0.5 < lo < 0.9 and 0.9 < hi < 1.5, (lo, hi)
+
+
+def test_a_curve_divided_by_itself_does_not_freeze_the_plot(viewer):
+    """The reference curve itself is 1 +- 1e-16: the view fitted to that and
+    pyqtgraph's tick loop never ended (the viewer froze). The view keeps a
+    sane height, and painting it finishes."""
+    _open_first(viewer)
+    lines = viewer.lines
+    lines.controls.x_combo.setCurrentText("freq")
+    lines.along_combo.setCurrentText("y")
+    lines.ref_combo.setCurrentIndex(lines.ref_combo.findData("row"))   # y = 20 um
+    next(r for r in lines.controls.rows if r.dim == "y").slider.setValue(2)
+    assert np.allclose(lines.preview.yData, 1.0)
+    lo, hi = lines.plot.vb.viewRange()[1]
+    assert hi - lo >= 1e-6
+    lines.add_current()
+    lo, hi = lines.plot.vb.viewRange()[1]
+    assert hi - lo >= 1e-6
+    lines.glw.grab()                                      # paints the axes
+
+
+def test_a_long_noisy_sweep_paints_fast(viewer, tmp_path):
+    """arg of a difference jumps +-pi at every point: antialiased (or dashed),
+    16001 such points took Qt 8-14 s per repaint and the window froze. Long
+    curves -- the preview and the added ones -- are drawn without it."""
+    import time
+    rng = np.random.default_rng(0)
+    f = np.linspace(2.0, 18.0, 16001)
+    z = rng.normal(size=(2, f.size)) + 1j * rng.normal(size=(2, f.size))
+    ds = xr.Dataset({"s_real": (("field", "freq"), z.real,
+                                {"complex_pair": "s", "complex_part": "real"}),
+                     "s_imag": (("field", "freq"), z.imag,
+                                {"complex_pair": "s", "complex_part": "imag"})},
+                    coords={"field": ("field", [0.0, 800.0]), "freq": ("freq", f)})
+    viewer.set_dataset(ds, tmp_path / "noisy.nc")
+    viewer.resize(1400, 900)
+    lines = viewer.lines
+    lines.controls.x_combo.setCurrentText("freq")
+    lines.controls.part_combo.setCurrentText("arg z")
+    lines.add_current()
+    assert not lines.preview.opts["antialias"] and not lines._items[0].opts["antialias"]
+    t = time.perf_counter()
+    lines.glw.grab()
+    assert time.perf_counter() - t < 2.0
