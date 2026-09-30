@@ -605,7 +605,10 @@ def _run(d: Data, setup: Setup, hand: int, start: dict[str, Spec]) -> Result:
         diff = evaluate(p.valuesdict(), d.x, setup, hand, d.xc, d.xp, d.xm) - d.y
         return np.concatenate([diff.real, diff.imag]) if setup.mode == "complex" else diff
 
-    out = lmfit.minimize(resid, params, method="leastsq")
+    # capped: a good start converges in ~100 evaluations; a hopeless one went
+    # to lmfit's default 50 000 (~30 s) before giving up
+    nvary = sum(1 for p in params.values() if p.vary)
+    out = lmfit.minimize(resid, params, method="leastsq", max_nfev=200 * (nvary + 1))
     values = {n: float(p.value) for n, p in out.params.items()}
     errors = {n: (float(p.stderr) if (p.vary and p.stderr is not None
                                       and np.isfinite(p.stderr)) else None)
@@ -632,10 +635,13 @@ def fit(x, y, setup: Setup, start: dict[str, Spec] | None = None) -> Result:
     runs = []
     if setup.mode == "complex":
         hands = [setup.hand] if setup.hand else [1, -1]
-        if not setup.hand and not start and setup.n_peaks > 1:
-            # several peaks: decide the hand on the strongest one alone, then fit
-            # everything once. The wrong hand's full fit starts from junk and
-            # wandered for ~30 s on a 10 000-point YIG sweep before losing.
+        picked = 0
+        if not setup.hand and (start or setup.n_peaks > 1):
+            # decide the hand on the strongest line alone, then fit that hand
+            # only. The wrong hand's full fit wanders: ~30 s from a guess on a
+            # 10 000-point YIG sweep, and from the operator's start values it
+            # ran into lmfit's 50 000-evaluation limit twice (65 s for one
+            # curve that fits in 0.15 s, 2026-09-30).
             picked = _pick_hand(x, y, setup)
             hands = [picked] if picked else hands
         for h in hands:
@@ -643,17 +649,17 @@ def fit(x, y, setup: Setup, start: dict[str, Spec] | None = None) -> Result:
                 runs.append(_run(d, setup, h, guess(x, y, setup, hand=h)))
                 continue
             runs.append(_run(d, setup, h, start))
-            if not setup.hand:
-                # the operator's start was made for ONE hand, and nobody knows
-                # which: for the mirror image, turn every peak by 180 deg, which
-                # keeps the value on resonance (chi -> conj(chi): +i -> -i)
+            if not setup.hand and not picked:
+                # the hand could not be decided, and the operator's start was
+                # made for ONE of them: for the mirror image, turn every peak by
+                # 180 deg (chi -> conj(chi) keeps the value on resonance)
                 runs.append(_run(d, setup, h, _turned(start, setup)))
         if start and not setup.hand:
             # and a fresh guess as a safety net: a poor start must not give a
             # worse result than no start (a start mixing both hands ended at
             # chi2 221 where the guess reaches 27, 2026-09-29). Parameters the
             # operator FIXED stay fixed.
-            h = _pick_hand(x, y, setup) or 1
+            h = picked or 1
             fresh = guess(x, y, setup, hand=h)
             fresh.update({n: sp for n, sp in start.items() if n in fresh and not sp.vary})
             runs.append(_run(d, setup, h, fresh))

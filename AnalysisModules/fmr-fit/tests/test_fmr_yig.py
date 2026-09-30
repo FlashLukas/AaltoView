@@ -144,3 +144,23 @@ def test_every_curve_of_the_window_path_has_error_bars(tmp_path):
             assert r.redchi < 2 * min(o.result.redchi for o in win.entries), e.curve.label
     finally:
         win.close()
+
+
+def test_fitting_again_from_the_result_is_quick(yig_rows, monkeypatch):
+    """Counted in model evaluations, not seconds (machines differ): from its
+    own result a 5-peak YIG fit also tried the wrong hand, twice into lmfit's
+    50 000-evaluation limit -- 65 s for a curve that fits in 0.15 s (2026-09-30)."""
+    import lmfit
+    c, r = yig_rows[3]
+    used = []
+    orig = lmfit.minimize
+
+    def counting(*a, **k):
+        out = orig(*a, **k)
+        used.append(out.nfev)
+        return out
+
+    monkeypatch.setattr(lmfit, "minimize", counting)
+    again = M.fit(c.x, c.z, M.Setup(n_peaks=5), start=r.specs())
+    assert sum(used) < 3000, used
+    assert again.chisqr == pytest.approx(r.chisqr, rel=1e-3)

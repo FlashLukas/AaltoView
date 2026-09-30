@@ -70,6 +70,20 @@ class Entry:
         return M.reference(self.curve.x, y, ref.curve.x, yr, how)
 
 
+#: above this many points, data are drawn as a thin line, not as symbols:
+#: 40 000 symbols (a YIG sweep, Re + Im + residuals) took 0.4 s per redraw
+MANY_POINTS = 2000
+
+
+def _points(x, y, color: str, size: int, name: str | None = None) -> pg.PlotDataItem:
+    """Measured points: symbols for a short sweep, a thin line for a long one."""
+    col = QtGui.QColor(color)
+    if np.size(x) > MANY_POINTS:
+        return pg.PlotDataItem(x, y, pen=pg.mkPen(col, width=1), name=name, connect="finite")
+    return pg.PlotDataItem(x, y, pen=None, symbol="o", symbolSize=size, symbolPen=None,
+                           symbolBrush=pg.mkBrush(col), name=name)
+
+
 def _pretty(name: str) -> str:
     """p1_hwhm -> 'peak 1: HWHM Δ'; bg_re -> 'background Re'."""
     if name.startswith("p") and "_" in name:
@@ -281,6 +295,10 @@ class FitWindow(QtWidgets.QWidget):
         self.glw.ci.layout.setRowStretchFactor(1, 1)
         _plain_axes(self.plot)
         _plain_axes(self.rplot)
+        for plot in (self.plot, self.rplot):
+            # long sweeps: draw what the screen can show, not every point
+            plot.setDownsampling(auto=True, mode="peak")
+            plot.setClipToView(True)
         band = QtGui.QColor(C["accent"]); band.setAlpha(22)
         self.region = pg.LinearRegionItem(brush=pg.mkBrush(band))
         self.region.setZValue(-10)
@@ -802,10 +820,8 @@ class FitWindow(QtWidgets.QWidget):
             return v * un(x) if un is not None else v
 
         for name, fn, col in parts:
-            self._add(self.plot, pg.PlotDataItem(
-                shown.x, fn(frame(shown.x, shown.y)), pen=None, symbol="o", symbolSize=4,
-                symbolPen=None, symbolBrush=pg.mkBrush(QtGui.QColor(col)),
-                name=f"{name} data"))
+            self._add(self.plot, _points(shown.x, fn(frame(shown.x, shown.y)), col, 4,
+                                         name=f"{name} data"))
         model_vals = None
         xs = None
         if e.result is not None and not show_start:
@@ -815,9 +831,7 @@ class FitWindow(QtWidgets.QWidget):
             rx, rr = M.residuals(e.result, c.x, y)
             rr = frame(rx, rr)
             for name, fn, col in parts:
-                self._add(self.rplot, pg.PlotDataItem(rx, fn(rr), pen=None, symbol="o",
-                                                      symbolSize=3, symbolPen=None,
-                                                      symbolBrush=pg.mkBrush(QtGui.QColor(col))))
+                self._add(self.rplot, _points(rx, fn(rr), col, 3))
             self._add(self.rplot, pg.InfiniteLine(pos=0, angle=0,
                                                   pen=pg.mkPen(C["muted"], width=1)))
         elif e.start is not None:
