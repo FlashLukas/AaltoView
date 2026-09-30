@@ -262,7 +262,11 @@ def ref_line(ds: xr.Dataset, sel: Selection) -> np.ndarray:
     ny, nx = red.data.shape
     zc = reference_values(red.data.values, style, coords_of(ds, msel.x, nx),
                           coords_of(ds, msel.y, ny))
-    k = sel.slices.get(held, Slice()).span(da.sizes[held])[0]
+    s = sel.slices.get(held, Slice())
+    if s.mode != "at":
+        raise ValueError(f"hold {held} at one value to reference along it "
+                         f"(it is averaged now)")
+    k = s.span(da.sizes[held])[0]
     return np.asarray(zc[k] if held == msel.y else zc[:, k])
 
 

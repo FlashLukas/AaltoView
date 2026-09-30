@@ -34,7 +34,10 @@ simulated data (see [Try it without lab data](#try-it-without-lab-data)).*
   pick a dimension, select several of its values and **Add selected** (one curve
   per value). Curves are frozen copies that remember their file, so curves from
   different measurements overlay. Normalise (peak, 0…1, first point, zero mean),
-  stack as a waterfall, log Y, rename, hide, remove.
+  stack as a waterfall, log Y, rename, hide, remove. **Reference along** the
+  "one per value of" dimension, as on the map: ÷ (or −) the curve at one value
+  (the highest field), ÷ the median curve, or derivative-divide -- for the
+  preview and the curves added. The view fits the visible curves.
 - **Export**, from both tabs:
   | | |
   |---|---|

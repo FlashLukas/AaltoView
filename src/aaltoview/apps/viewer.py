@@ -982,6 +982,7 @@ class LinePanel(_Panel):
                                                     style=QtCore.Qt.DashLine))
         self.plot.addItem(self.preview)
         self._items: list[pg.PlotDataItem] = []
+        self._range_key = None
         self.plot.scene().sigMouseMoved.connect(self._hover)
         split.addWidget(self.glw)
 
@@ -1011,6 +1012,36 @@ class LinePanel(_Panel):
         self.add_sel_btn = QtWidgets.QPushButton("Add selected")
         self.add_sel_btn.clicked.connect(self.add_selected)
         sv.addWidget(self.add_sel_btn)
+
+        rg = QtWidgets.QGridLayout()
+        self.ref_label = QtWidgets.QLabel("reference")
+        rg.addWidget(self.ref_label, 0, 0)
+        self.ref_combo = QtWidgets.QComboBox()
+        for key, text in (("none", "none"), ("row", "the curve at"),
+                          ("median_rows", "the median curve"),
+                          ("dd_y", "derivative-divide")):
+            self.ref_combo.addItem(text, key)
+        self.ref_combo.setToolTip(
+            "Against the SAME selection at another value of the 'one per value of'\n"
+            "dimension, on the complex values (before |z| or arg), as on the map:\n"
+            "  the curve at: ÷ (or −) the curve at the value chosen -- e.g. a VNA\n"
+            "    sweep ÷ the one at the highest field, resonance out of the band;\n"
+            "  the median curve: ÷ the median over all its values (no reference measured);\n"
+            "  derivative-divide: (z[k+1] − z[k−1]) / (Δ · z[k]) across its values.\n"
+            "Applies to the preview and to the curves ADDED from now on; the label says it.")
+        self.ref_combo.currentIndexChanged.connect(self._ref_changed)
+        rg.addWidget(self.ref_combo, 0, 1, 1, 2)
+        self.ref_value = QtWidgets.QComboBox()
+        self.ref_value.currentIndexChanged.connect(self.redraw)
+        rg.addWidget(self.ref_value, 1, 1)
+        self.ref_op = QtWidgets.QComboBox()
+        self.ref_op.addItem("divide", "divide")
+        self.ref_op.addItem("subtract", "subtract")
+        self.ref_op.currentIndexChanged.connect(self.redraw)
+        rg.addWidget(self.ref_op, 1, 2)
+        rg.setColumnStretch(1, 1)
+        sv.addLayout(rg)
+        self._ref_enable()
 
         tag2 = QtWidgets.QLabel("CURVES"); tag2.setObjectName("tag")
         sv.addWidget(tag2)
@@ -1094,7 +1125,9 @@ class LinePanel(_Panel):
         ds, d = self.host.ds, self.along_combo.currentText()
         if ds is None or not d:
             self.values.clear()
+            self.ref_value.clear()
             self.add_sel_btn.setEnabled(False)
+            self._ref_enable()
             return
         n = self.controls.current_da().sizes[d]
         texts = [f"{d} = {V.coord_text(ds, d, i)}" for i in range(n)]
@@ -1103,7 +1136,40 @@ class LinePanel(_Panel):
         if texts != [self.values.item(i).text() for i in range(self.values.count())]:
             self.values.clear()
             self.values.addItems(texts)
+            # the reference's values too; a new axis starts at its LAST value
+            # (the highest field of a sweep, the usual reference)
+            self.ref_value.blockSignals(True)
+            self.ref_value.clear()
+            self.ref_value.addItems([V.coord_text(ds, d, i) for i in range(n)])
+            self.ref_value.setCurrentIndex(n - 1)
+            self.ref_value.blockSignals(False)
         self.add_sel_btn.setEnabled(True)
+        self._ref_enable()
+
+    # ---- reference --------------------------------------------------------
+    def _ref_changed(self):
+        self._ref_enable()
+        self.redraw()
+
+    def _ref_enable(self):
+        mode = self.ref_combo.currentData()
+        has = bool(self.along_combo.currentText())
+        self.ref_combo.setEnabled(has)
+        self.ref_label.setText(f"reference along {self.along_combo.currentText()}"
+                               if has else "reference")
+        self.ref_value.setVisible(mode == "row")
+        self.ref_op.setVisible(mode in ("row", "median_rows"))
+
+    def selection(self) -> E.Selection | None:
+        """The controls' selection, with the reference when one is chosen."""
+        sel = self.controls.selection()
+        mode = self.ref_combo.currentData()
+        d = self.along_combo.currentText()
+        if sel is None or mode == "none" or not d:
+            return sel
+        sel.ref = {"x": sel.x, "y": d, "mode": mode, "op": self.ref_op.currentData(),
+                   "i": max(self.ref_value.currentIndex(), 0) if self.ref_value.count() else -1}
+        return sel
 
     # ---- curves -----------------------------------------------------------
     def add_curves(self, curves: list[E.Curve]):
@@ -1120,7 +1186,7 @@ class LinePanel(_Panel):
         self.redraw()
 
     def add_current(self):
-        sel = self.controls.selection()
+        sel = self.selection()
         if self.host.ds is None or sel is None:
             self.say("Open a measurement first.")
             return
@@ -1130,7 +1196,7 @@ class LinePanel(_Panel):
             self.say(f"added: {c.label}")
 
     def add_selected(self):
-        sel = self.controls.selection()
+        sel = self.selection()
         rows = sorted(self.values.row(it) for it in self.values.selectedItems())
         if self.host.ds is None or sel is None or not rows:
             self.say("Select one or more values in the list first.")
@@ -1179,7 +1245,7 @@ class LinePanel(_Panel):
 
         preview = None
         if self.show_preview.isChecked() and self.host.ds is not None:
-            sel = self.controls.selection()
+            sel = self.selection()
             if sel is not None:
                 try:
                     preview = E.make_curve(self.host.ds, sel, self.host.path)
@@ -1197,6 +1263,23 @@ class LinePanel(_Panel):
             self.plot.setLabel("bottom", xt)
             self.plot.setLabel("left", yt)
         self.plot.setLogMode(y=self.logy.isChecked())
+        self._fit_view(shown, preview is not None)
+
+    def _fit_view(self, shown, has_preview: bool):
+        """Fit the view to the VISIBLE curves when what is shown changes (a curve
+        added, hidden, removed; normalisation, stacking, log Y) -- not on every
+        redraw, so a zoom survives scrubbing the preview. The preview counts
+        only when there are no curves: a raw preview beside referenced curves
+        (0.7 vs 1.0) squashed them (2026-09-30). pyqtgraph's own auto-range is
+        switched off for good by the first zoom or pan, so it is done here."""
+        key = (tuple(id(c) for c in shown), self.norm(), self.offset(),
+               self.logy.isChecked())
+        if shown:
+            if key != self._range_key:
+                self.plot.autoRange(items=self._items)
+        elif has_preview:
+            self.plot.autoRange(items=[self.preview])
+        self._range_key = key
 
     def _hover(self, pos):
         if not self.plot.sceneBoundingRect().contains(pos):
@@ -1220,7 +1303,7 @@ class LinePanel(_Panel):
         shown = [c for c in self.curves if c.visible]
         if shown:
             return shown
-        sel = self.controls.selection()
+        sel = self.selection()
         if self.host.ds is not None and sel is not None:
             return [E.make_curve(self.host.ds, sel, self.host.path)]
         raise ValueError("no curves to send -- open a measurement first")

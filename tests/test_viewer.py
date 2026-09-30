@@ -16,7 +16,7 @@ pytest.importorskip("PySide6")
 pytest.importorskip("pyqtgraph")
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6 import QtWidgets  # noqa: E402
+from PySide6 import QtCore, QtWidgets  # noqa: E402
 
 
 def _cube() -> xr.Dataset:
@@ -254,3 +254,37 @@ def test_the_map_divided_by_a_reference_line(viewer):
     m.ref_combo.setCurrentIndex(m.ref_combo.findData("dd_x"))
     assert m.ref_op.isHidden() and m.ref_value.isHidden()
     assert m._map.z_unit == "1/GHz"
+
+
+def test_1d_curves_divided_by_the_curve_at_another_value(viewer):
+    """The 1D reference: the same selection at another value of the 'one per
+    value of' dim -- on the preview and on the curves added."""
+    _open_first(viewer)
+    lines = viewer.lines
+    lines.controls.x_combo.setCurrentText("freq")        # along freq, one per y
+    lines.along_combo.setCurrentText("y")
+    lines.ref_combo.setCurrentIndex(lines.ref_combo.findData("row"))
+    assert lines.ref_value.currentText() == "20 um"       # the last value
+    for i in range(lines.values.count()):
+        lines.values.item(i).setSelected(True)
+    lines.add_selected()
+    f = np.array([1.0, 2.0, 3.0, 4.0])
+    for c, yv in zip(lines.curves, (0.0, 10.0, 20.0)):
+        np.testing.assert_allclose(c.y, (f * 100 + yv) / (f * 100 + 20))   # x = 0 held
+    assert lines.curves[0].label.endswith("(÷ y = 20 um)")
+    np.testing.assert_allclose(lines.preview.yData, lines.curves[0].y)  # preview at y = 0
+
+
+def test_the_1d_view_fits_the_visible_curves(viewer):
+    """A curve on another scale added, then hidden: the view follows what is
+    visible, and the preview does not stretch it when curves are shown."""
+    _open_first(viewer)
+    lines = viewer.lines
+    lines.controls.x_combo.setCurrentText("freq")
+    lines.add_current()                                   # 100 ... 400 mdeg
+    lines.plot.vb.setRange(yRange=(-5000, 5000))          # the operator zoomed out
+    lines.ref_combo.setCurrentIndex(lines.ref_combo.findData("row"))
+    lines.add_current()                                   # ~0.8 ... 0.95
+    lines.table.topLevelItem(0).setCheckState(0, QtCore.Qt.Unchecked)
+    lo, hi = lines.plot.vb.viewRange()[1]
+    assert -0.5 < lo < 0.9 and 0.9 < hi < 1.5, (lo, hi)
