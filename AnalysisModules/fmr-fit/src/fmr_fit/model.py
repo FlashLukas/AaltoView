@@ -371,20 +371,23 @@ def _wrap(deg: float) -> float:
     return 180.0 if w == -180.0 else w
 
 
-def guess(x, y, setup: Setup, hand: int = 1,
-          keep: dict[str, Spec] | None = None) -> dict[str, Spec]:
+def guess(x, y, setup: Setup, hand: int = 1, keep: dict[str, Spec] | None = None,
+          at: dict[int, tuple] | None = None) -> dict[str, Spec]:
     """Start values for every parameter.
 
     Background from the outer 10 % of the range on each side (a resonance is
     in the middle of a sensible sweep). Peaks from the largest remaining bump,
     one after the other. Peaks the operator already has in `keep` are kept as
     they are -- adding a second peak must not throw away a tuned first one.
+    `at` = {peak k: (centre, hwhm or None)} puts peak k THERE instead of
+    searching (a prediction, a click on the plot); amplitude and phase are then
+    read off the data at that point.
     """
     d = prepare(x, y, setup)
     if setup.dd and setup.delay:
-        return _guess_dd_from_raw(x, y, setup, hand, keep)
+        return _guess_dd_from_raw(x, y, setup, hand, keep, at)
     if setup.dd:
-        return _guess_dd(d, setup, hand, keep)
+        return _guess_dd(d, setup, hand, keep, at=at)
     n = d.x.size
     m = max(3, n // 10)
     edge = np.r_[np.arange(m), np.arange(n - m, n)]
@@ -429,16 +432,41 @@ def guess(x, y, setup: Setup, hand: int = 1,
     cands = _candidates(d.x, z)[: setup.n_peaks]
     cand_pos = list(cands)
     w_first = None
-    for k in range(1, setup.n_peaks + 1):          # kept peaks: their lines are taken
+    for k in range(1, setup.n_peaks + 1):          # kept / placed peaks: lines taken
         if keep and all(nm in keep for nm in peak_names(k)):
             c0, w0 = keep[f"p{k}_center"].value, keep[f"p{k}_hwhm"].value
             allowed &= np.abs(d.x - c0) > 4 * max(w0, 1e-12)
+        elif at and k in at:
+            c0, w0 = at[k]
+            allowed &= np.abs(d.x - c0) > 4 * max(w0 or 0.0, 1e-12)
     for k in range(1, setup.n_peaks + 1):
         names = peak_names(k)
         if keep and all(nm in keep for nm in names):
             vals = {p: keep[f"p{k}_{p}"].value for p in PEAK_PARAMS}
             specs.update({nm: keep[nm] for nm in names})
         else:
+            if at and k in at:
+                c0, w0 = at[k]
+                i = int(np.argmin(np.abs(d.x - c0)))
+                step0 = float(np.median(np.diff(d.x)))
+                reach = max(3, int(round(4 * (w0 if w0 else 5 * step0) / step0)))
+                only = np.zeros(d.x.size, dtype=bool)
+                only[i] = True
+                vals = _guess_peak(d.x, z, hand, only,
+                                   (max(0, i - reach), min(d.x.size - 1, i + reach)))
+                vals["center"] = float(c0)
+                if w0:
+                    vals["hwhm"] = float(w0)
+                specs[f"p{k}_center"] = Spec(vals["center"], min=d.x[0] - 0.25 * span,
+                                             max=d.x[-1] + 0.25 * span)
+                step = float(np.median(np.diff(d.x)))
+                specs[f"p{k}_hwhm"] = Spec(max(vals["hwhm"], step), min=0.25 * step, max=span)
+                specs[f"p{k}_amp"] = Spec(vals["amp"], min=0.0)
+                specs[f"p{k}_phase"] = Spec(vals["phase"])
+                z = z - vals["amp"] * np.exp(1j * np.deg2rad(vals["phase"])) * chi(
+                    d.x, vals["center"], vals["hwhm"], hand, setup.lineshape)
+                allowed &= np.abs(d.x - vals["center"]) > 4 * max(vals["hwhm"], 1e-12)
+                continue
             if not allowed.any():
                 allowed[:] = True
             # not a line already taken -- by a peak found, or KEPT: going from 1
@@ -493,14 +521,14 @@ def _delay_from_phase(d: Data) -> float:
     return float(-np.polyfit(d.x[edge] - d.xc, ph[edge], 1)[0] / (2 * np.pi))
 
 
-def _guess_dd_from_raw(x, y, setup: Setup, hand: int, keep) -> dict[str, Spec]:
+def _guess_dd_from_raw(x, y, setup: Setup, hand: int, keep, at=None) -> dict[str, Spec]:
     """Start values for derivative-divide WITH the delay, from the raw sweep:
     the delay unwound there (phase slope), the peak guessed relative to the
     background there. In D itself the peaks are rotated by e^{-+i 2pi tau h},
     2 rad for 3.2 ns and 100 MHz steps, and integrating D back gives nothing
     useful to guess from (tried first, 2026-09-29)."""
     raw = Setup(**{**setup.__dict__, "dd": 0, "delay": True, "baseline": "linear"})
-    g = guess(x, y, raw, hand=hand, keep=keep)
+    g = guess(x, y, raw, hand=hand, keep=keep, at=at)
     c = g["bg_re"].value + 1j * g["bg_im"].value
     c = c if abs(c) > 0 else 1.0
     s1 = g["slope_re"].value + 1j * g["slope_im"].value
@@ -520,7 +548,7 @@ def _guess_dd_from_raw(x, y, setup: Setup, hand: int, keep) -> dict[str, Spec]:
     return specs
 
 
-def _guess_dd(d: Data, setup: Setup, hand: int, keep, tau=None) -> dict[str, Spec]:
+def _guess_dd(d: Data, setup: Setup, hand: int, keep, tau=None, at=None) -> dict[str, Spec]:
     """Start values for derivative-divided data: D is d ln S / dx, so its
     integral gives S back up to a constant (the background, if it varies
     slowly). Guess on that, then make the amplitude relative and the phase
@@ -547,7 +575,7 @@ def _guess_dd(d: Data, setup: Setup, hand: int, keep, tau=None) -> dict[str, Spe
     s = np.exp(L)
     plain = Setup(**{**setup.__dict__, "dd": 0, "delay": False, "baseline": "linear",
                      "xmin": None, "xmax": None})
-    g = guess(d.x, s, plain, hand=hand, keep=keep)
+    g = guess(d.x, s, plain, hand=hand, keep=keep, at=at)
     c = g["bg_re"].value + 1j * g["bg_im"].value
     specs = {"bg_re": Spec(float(coef[0].real)), "bg_im": Spec(float(coef[0].imag))}
     if setup.baseline == "linear":
@@ -585,6 +613,8 @@ class Result:
     message: str
     xrange: tuple[float, float]
     dd_half: float | None = None
+    #: the operator's (or a prediction's) bounds on the centres: {name: (min, max)}
+    windows: dict = field(default_factory=dict)
 
     def evaluate(self, x) -> np.ndarray:
         return evaluate(self.values, x, self.setup, self.hand, self.xc, dd_half=self.dd_half)
@@ -625,7 +655,12 @@ def _run(d: Data, setup: Setup, hand: int, start: dict[str, Spec]) -> Result:
                   chisqr=float(out.chisqr), redchi=float(out.redchi),
                   ndata=int(out.ndata), nvarys=int(out.nvarys),
                   success=bool(out.success), message=str(out.message),
-                  xrange=(float(d.x[0]), float(d.x[-1])), dd_half=d.dd_half)
+                  xrange=(float(d.x[0]), float(d.x[-1])), dd_half=d.dd_half,
+                  windows={n: (start[n].min, start[n].max) for n in values
+                           if n.endswith("_center") and n in start
+                           and np.isfinite(start[n].min) and np.isfinite(start[n].max)
+                           and start[n].max - start[n].min
+                           < 0.5 * (float(d.x[-1]) - float(d.x[0]))})
 
 
 def fit(x, y, setup: Setup, start: dict[str, Spec] | None = None) -> Result:
@@ -711,6 +746,23 @@ def follow_range(x, y, setup: Setup, lo: float, hi: float) -> tuple[float, float
     return max(x0 + lo * w, float(xs.min())), min(x0 + hi * w, float(xs.max()))
 
 
+def windowed(specs: dict[str, Spec], at: dict[int, tuple], linewidths: float) -> dict[str, Spec]:
+    """Tight bounds around predicted peaks: each centre within +- `linewidths`
+    FWHM of where it was put, each HWHM within a factor 3 of the predicted one.
+    The fit then cannot drift onto a neighbouring line, so the peak keeps the
+    role it was predicted for."""
+    out = dict(specs)
+    for k, (c0, w0) in at.items():
+        if not w0:
+            continue
+        cs, ws = out[f"p{k}_center"], out[f"p{k}_hwhm"]
+        half = linewidths * 2 * w0
+        out[f"p{k}_center"] = Spec(cs.value, cs.vary, c0 - half, c0 + half)
+        out[f"p{k}_hwhm"] = Spec(float(np.clip(ws.value, w0 / 3, 3 * w0)), ws.vary,
+                                 w0 / 3, 3 * w0)
+    return out
+
+
 def _pick_hand(x, y, setup: Setup) -> int:
     """The handedness from a quick one-peak fit, both ways, in a window of ten
     widths around the strongest line; 0 if that cannot be done."""
@@ -744,6 +796,11 @@ def suspicious(res: Result) -> str:
     if not res.success:
         return "did not converge"
     for k in range(1, res.setup.n_peaks + 1):
+        lo_hi = res.windows.get(f"p{k}_center")
+        if lo_hi:
+            v, (lo, hi) = res.values[f"p{k}_center"], lo_hi
+            if min(v - lo, hi - v) < 1e-3 * (hi - lo):
+                return f"peak {k}: at the edge of its window (the line is elsewhere?)"
         for p, sig in (("amp", 3.0), ("hwhm", 1.0)):
             v, e = res.values[f"p{k}_{p}"], res.errors.get(f"p{k}_{p}")
             if res.vary.get(f"p{k}_{p}") and (e is None or sig * e > abs(v)):

@@ -55,6 +55,7 @@ class Entry:
     located: tuple | None = None        # (key, (x0, hwhm)): M.locate is a fit, done once
     reference: tuple | None = None      # (Entry, "divide" | "subtract"): taken out first
     touched: bool = False               # the operator set this curve up or fitted it
+    predicted: bool = False             # fitted from the Dispersion tab's prediction
 
     def y(self) -> np.ndarray:
         """What is fitted: the complex values or the shown channel, with the
@@ -231,7 +232,8 @@ class FitWindow(QtWidgets.QWidget):
         og.addWidget(self.ref_how, 2, 2)
         lv.addLayout(og)
         self.formula = QtWidgets.QLabel(
-            "S = Σ A·e^{iφ}·Δ/(x0 − x − iΔ) + b0 + b1·(x − xc)     Δ = HWHM, FWHM = 2Δ")
+            "S = Σ A·e^{iφ}·Δ/(x0 − x − iΔ) + b0 + b1·(x − xc)     Δ = HWHM, FWHM = 2Δ"
+            "     ·  Ctrl+click on the plot: a peak there")
         self.formula.setStyleSheet(f"color:{C['muted']}; font-size:11px;")
         self.formula.setWordWrap(True)
         lv.addWidget(self.formula)
@@ -312,6 +314,7 @@ class FitWindow(QtWidgets.QWidget):
         self.region.setZValue(-10)
         self.region.sigRegionChangeFinished.connect(self._range_dragged)
         self.plot.sigXRangeChanged.connect(self._thin)
+        self.plot.scene().sigMouseClicked.connect(self._plot_clicked)
         self.plot.addItem(self.region)
         self._items: list = []
         rv.addWidget(self.glw, 3)
@@ -623,7 +626,40 @@ class FitWindow(QtWidgets.QWidget):
                 f"{e.curve.x_unit}")
 
     # ── parameters ─────────────────────────────────────────────────────────
-    def _guess(self, e: Entry, keep, quiet=False) -> bool:
+    def _plot_clicked(self, ev):
+        """Ctrl+click on the plot: a peak there."""
+        if not (ev.modifiers() & QtCore.Qt.ControlModifier):
+            return
+        if not self.plot.sceneBoundingRect().contains(ev.scenePos()):
+            return
+        self.add_peak_at(self.plot.vb.mapSceneToView(ev.scenePos()).x())
+
+    def add_peak_at(self, x: float):
+        """One more peak, put at x (the others kept as they are)."""
+        e = self.current()
+        if e is None:
+            return
+        if e.setup.n_peaks >= self.peaks.maximum():
+            self.say(f"at most {self.peaks.maximum()} peaks", error=True)
+            return
+        keep = {n: s for n, s in (e.start or {}).items() if n.startswith("p")}
+        widths = [s.value for n, s in keep.items() if n.endswith("_hwhm")]
+        k = e.setup.n_peaks + 1
+        e.setup = M.Setup(**{**e.setup.__dict__, "n_peaks": k})
+        self._filling = True
+        try:
+            self.peaks.setValue(k)
+        finally:
+            self._filling = False
+        e.result = None
+        if self._guess(e, keep=keep or None,
+                       at={k: (float(x), float(np.median(widths)) if widths else None)}):
+            self.say(f"peak {k} put at {x:.6g} {e.curve.x_unit} -- Fit to fit it")
+        self._remember(e)
+        self._fill_table()
+        self._redraw()
+
+    def _guess(self, e: Entry, keep, quiet=False, at=None) -> bool:
         try:
             y = e.y()
             hand = e.setup.hand
@@ -632,7 +668,7 @@ class FitWindow(QtWidgets.QWidget):
                 # added must belong to the same hand as the new ones (a start
                 # mixing both made every fit from it fail, 2026-09-29)
                 hand = M._pick_hand(e.curve.x, y, e.setup)
-            e.start = M.guess(e.curve.x, y, e.setup, hand=hand or 1, keep=keep)
+            e.start = M.guess(e.curve.x, y, e.setup, hand=hand or 1, keep=keep, at=at)
         except Exception as exc:
             e.start = None
             if not quiet:

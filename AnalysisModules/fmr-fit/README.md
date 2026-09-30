@@ -174,6 +174,35 @@ sloped loss, and a reference sweep at 800 mT, where nothing resonates below
    μ0Ms = 176, then click **Fit**. That gives back A = 3.700 pJ/m,
    M_eff = 176.0 mT and γ/2π = 28.00 GHz/T.
 
+## Let the dispersion fit the rest
+
+Fitting dozens of sweeps one by one is slow, and "by order" breaks when a mode
+is missing from a sweep. Instead:
+
+1. **Fit a few curves by hand**, spread over the range, e.g. 3 fields.
+   Select them (Ctrl-click in the list), then click **Fit selected**. To help
+   a fit, type start values in the table, or **Ctrl+click on the plot** to
+   put a peak where you see one.
+2. **Dispersion:** set their roles (**Assign PSSW by order**, or by hand),
+   then click **Fit**. A rough dispersion is enough.
+3. Click **Predict + fit the others.** For every curve not fitted by hand,
+   the dispersion predicts which modes lie inside its range, where, and how
+   wide.
+   - Those become its peaks, with their **roles already set**.
+   - A mode outside the sweep is simply left out: at 25 mT the uniform mode
+     is below 2 GHz, so that sweep gets PSSW 1–4 and nothing made up.
+   - **Tight** (the default) keeps each peak within ± N linewidths of the
+     prediction (N = 3, editable) and its width within a factor 3. **Loose**
+     uses the prediction only as the start.
+   - A peak that ends at the edge of its window is flagged ⚠, because the
+     line is probably elsewhere.
+4. The dispersion is then refitted with everything, if that box is ticked.
+   Click the button again to redo the predicted curves from the better
+   dispersion. Curves fitted by hand are never replaced.
+
+On the lab-style YIG sweeps, 3 hand-fitted sweeps are enough: all 12 are
+predicted within 0.003 GHz, and A, M_eff and γ come back exactly.
+
 ## Working through a series
 
 - **Settings carry over.** When you set up or fit one curve and move to the

@@ -178,6 +178,39 @@ class DispersionTab(QtWidgets.QWidget):
         self.reset_btn.clicked.connect(self.reset_specs)
         fb.addWidget(self.fit_btn); fb.addWidget(self.reset_btn)
         lv.addLayout(fb)
+
+        lv.addWidget(self._tag("PREDICT THE OTHER CURVES  (from this dispersion)"))
+        pr = QtWidgets.QHBoxLayout()
+        self.pred_bounds = QtWidgets.QComboBox()
+        self.pred_bounds.addItem("tight: each peak within ±", "tight")
+        self.pred_bounds.addItem("loose: predictions as start values only", "loose")
+        self.pred_bounds.setToolTip(
+            "Tight: every predicted peak stays within ± N linewidths (FWHM) of where the\n"
+            "dispersion puts it, and its width within a factor 3 -- it cannot drift onto\n"
+            "a neighbouring line, so it keeps its role. Loose: the prediction is only\n"
+            "where the fit starts (for a rough dispersion that may be off).")
+        self.pred_bounds.currentIndexChanged.connect(
+            lambda *_: self.pred_width.setEnabled(self.pred_bounds.currentData() == "tight"))
+        pr.addWidget(self.pred_bounds, 1)
+        self.pred_width = QtWidgets.QDoubleSpinBox()
+        self.pred_width.setRange(0.5, 50.0); self.pred_width.setSingleStep(0.5)
+        self.pred_width.setValue(3.0); self.pred_width.setSuffix(" linewidths")
+        pr.addWidget(self.pred_width)
+        lv.addLayout(pr)
+        pr2 = QtWidgets.QHBoxLayout()
+        self.pred_refit = QtWidgets.QCheckBox("then refit the dispersion with them")
+        self.pred_refit.setChecked(True)
+        pr2.addWidget(self.pred_refit, 1)
+        self.pred_btn = QtWidgets.QPushButton("Predict + fit the others")
+        self.pred_btn.setToolTip(
+            "Every curve NOT fitted by hand: the modes this dispersion puts inside its\n"
+            "range (uniform, PSSW n) become its peaks -- positions, widths, roles -- and\n"
+            "it is fitted from there. Modes outside a sweep are left out, so no peak is\n"
+            "made up. Fit a few curves by hand, fit the dispersion roughly, then this.\n"
+            "Pressed again, it redoes the predicted curves from the newer dispersion.")
+        self.pred_btn.clicked.connect(self.predict_and_fit)
+        pr2.addWidget(self.pred_btn)
+        lv.addLayout(pr2)
         split.addWidget(left)
 
         # ── right ──────────────────────────────────────────────────────────
@@ -533,6 +566,88 @@ class DispersionTab(QtWidgets.QWidget):
         if weak:
             msg += f".  Not determined by these data: {', '.join(weak)} (error > value)"
         self.say(msg, error=bool(weak) or not self.dres.success)
+
+    # ── predicting the other curves ────────────────────────────────────────
+    def predict_and_fit(self):
+        """The curves not fitted by hand, from this dispersion (asked for
+        2026-09-30: fit three by hand, fit the dispersion roughly, and let it
+        place and bound the peaks of all the others)."""
+        if self.dres is None:
+            self.say("Fit the dispersion first: fit a few curves by hand, set their roles, "
+                     "Fit here -- then predict the others from it.", error=True)
+            return
+        owner = self.owner
+        refs = {id(e.reference[0]) for e in owner.entries if e.reference}
+        targets = [e for e in owner.entries
+                   if (e.result is None or e.predicted) and id(e) not in refs]
+        if not targets:
+            self.say("Nothing to predict: every curve was fitted by hand.")
+            return
+        sources = (self._read_sources() if self.sources is not None
+                   else D.guess_sources([(e.curve, None) for e in owner.entries]))
+        # widths for the prediction when there is no damping fit yet
+        widths = {}
+        for role in {p.role for p in self.points if p.use}:
+            w = [p.fwhm for p in self.points if p.use and p.role == role and np.isfinite(p.fwhm)]
+            if w:
+                widths[role] = float(np.median(w))
+        tight = self.pred_bounds.currentData() == "tight"
+        n_lw = self.pred_width.value()
+        done, skipped = [], []
+        QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.WaitCursor)
+        try:
+            for e in targets:
+                owner._take_template(e)
+                preds, why = D.predict(e.curve, sources, self.dres, self.damp, widths)
+                if not preds:
+                    skipped.append(f"{e.curve.label}: {why or 'no mode in its range'}")
+                    continue
+                try:
+                    res, setup, start = self._fit_predicted(e, preds, tight, n_lw)
+                except Exception as exc:
+                    skipped.append(f"{e.curve.label}: {exc}")
+                    continue
+                e.setup, e.result, e.predicted, e.touched = setup, res, True, True
+                e.start = {n: M.Spec(v, start[n].vary, start[n].min, start[n].max)
+                           for n, v in res.values.items() if n in start}
+                for k in range(1, 7):
+                    self.roles.pop((id(e), k), None)
+                for k, p in enumerate(preds, 1):
+                    self.roles[(id(e), k)] = p.role
+                done.append(e)
+        finally:
+            QtWidgets.QApplication.restoreOverrideCursor()
+        owner._after_fit(done)
+        self.refresh()
+        if done and self.pred_refit.isChecked():
+            self.fit()
+        check = [e.curve.label for e in done if M.suspicious(e.result)]
+        msg = (f"predicted and fitted {len(done)} curve{'s' if len(done) != 1 else ''}"
+               + (f" (within ±{n_lw:g} linewidths)" if tight else " (loose)"))
+        if self.pred_refit.isChecked() and done and self.dres is not None:
+            msg += f"; dispersion refitted: χ²_red = {self.dres.redchi:.3g}"
+        if check:
+            msg += f"; check {', '.join(check[:4])} (⚠ in Resonances)"
+        if skipped:
+            msg += " -- not predicted: " + "; ".join(skipped[:3])
+        self.say(msg, error=bool(check or skipped))
+
+    def _fit_predicted(self, e, preds, tight: bool, n_lw: float):
+        """One curve, its peaks placed (and bounded) where the dispersion says."""
+        y = e.y()
+        setup = M.Setup(**{**e.setup.__dict__, "n_peaks": len(preds)})
+        hand = setup.hand
+        if setup.mode == "complex" and not hand:
+            hand = M._pick_hand(e.curve.x, y, setup) or 1
+        at = {k: (p.center, p.hwhm) for k, p in enumerate(preds, 1)}
+        start = M.guess(e.curve.x, y, setup, hand=hand or 1, at=at)
+        if tight:
+            start = M.windowed(start, at, n_lw)
+        # the hand decided, so no fresh-guess run replaces the placed peaks:
+        # peak k must stay the mode it was predicted to be
+        fit_setup = M.Setup(**{**setup.__dict__, "hand": hand if setup.mode == "complex"
+                               else setup.hand})
+        return M.fit(e.curve.x, y, fit_setup, start=start), setup, start
 
     def _fill_results(self):
         rows = D.result_rows(self.dres, self.damp) if self.dres else []

@@ -173,6 +173,89 @@ def pssw_roles(rows, sources: dict[str, Source]) -> dict[tuple[int, int], int]:
     return out
 
 
+def curve_coords(c, sources: dict[str, Source], fell_back: dict | None = None):
+    """Where a curve was measured: (swept coordinate, factor from its x unit to
+    mT / GHz / deg, {other coordinate: value}, "" or why it cannot be placed).
+    `fell_back` counts the fallback values used."""
+    by_dim = {s[1]: role for role, s in sources.items() if s[0] == "dim"}
+    swept_role = by_dim.get(c.x_name)
+    kind, fac = unit_kind(c.x_unit)
+    if swept_role is None or kind is None:
+        return None, 1.0, {}, (f"its x axis '{c.x_name}' ({c.x_unit or 'no unit'}) is not "
+                               "set as field, frequency or angle")
+    base, missing = {}, []
+    for role, src in sources.items():
+        how, what = src[0], src[1]
+        fallback = src[2] if len(src) > 2 else None
+        if role == swept_role:
+            continue
+        if how == "const":
+            base[role] = float(what)
+        elif what in c.held:
+            v, u = c.held[what]
+            base[role] = v * unit_kind(u)[1]
+        elif fallback is not None:
+            base[role] = float(fallback)
+            if fell_back is not None:
+                key = f"{what} = {fallback:g} {INTERNAL.get(role, 'deg')}"
+                fell_back[key] = fell_back.get(key, 0) + 1
+        else:
+            missing.append(what)
+    if missing:
+        return swept_role, fac, base, (f"no value for {', '.join(missing)} (its file has no "
+                                       "such dimension; give a value in Coordinates)")
+    return swept_role, fac, base, ""
+
+
+@dataclass
+class Prediction:
+    """Where the model puts one mode on one curve, in that curve's x units."""
+    role: int
+    center: float
+    hwhm: float | None                  # None: no width known (no damping fit yet)
+
+
+def predict(c, sources: dict[str, Source], dres: "DResult", damp: "DampResult | None" = None,
+            widths: dict[int, float] | None = None) -> tuple[list[Prediction], str]:
+    """The modes of the fitted dispersion on curve c: the uniform mode and every
+    PSSW order in it, at the field (frequency) the curve was held at -- only
+    those inside the curve's x range, sorted by position. Widths from the
+    damping fit, else `widths` ({role: FWHM in mT or GHz}). Returns the
+    predictions and "" -- or [] and why not."""
+    swept, fac, base, why = curve_coords(c, sources)
+    if why:
+        return [], why
+    if "elev" in base:
+        base["theta"] = 90.0 - base.pop("elev")
+    if swept not in ("H", "f"):
+        return [], "predictions are for field or frequency sweeps"
+    x = np.asarray(c.x, dtype=float) * fac
+    x = x[np.isfinite(x)]
+    lo, hi = float(x.min()), float(x.max())
+    th, ph = base.get("theta", 90.0), base.get("phi", 0.0)
+    out = []
+    for role in [ROLE_UNIFORM] + list(dres.orders):
+        hx = dres.hex(role)
+        if swept == "f":
+            H = base.get("H", 0.0)
+            x0 = float(frequency(np.array([H]), th, ph, dres.internal, hx)[0])
+            f = x0
+        else:
+            f = base.get("f", 0.0)
+            x0 = float(resonance_field(np.array([f]), th, ph, dres.internal, hx)[0])
+            H = x0
+        if not np.isfinite(x0) or not lo <= x0 <= hi:
+            continue                     # this mode is not in this sweep
+        fw = None
+        if damp is not None:
+            pt = Point(H=H, f=f, theta=th, phi=ph, swept=swept, role=role)
+            fw = float(linewidth([pt], dres.internal, damp.alpha, damp.dH0)[0])
+        elif widths:
+            fw = widths.get(role, widths.get(ROLE_UNIFORM))
+        out.append(Prediction(role, x0 / fac, None if not fw else fw / 2 / fac))
+    return sorted(out, key=lambda q: q.center), ""
+
+
 def points_from_fits(rows, sources: dict[str, Source],
                      roles: dict[tuple[int, int], int] | None = None,
                      notes: list[str] | None = None) -> tuple[list[Point], list[str]]:
@@ -187,35 +270,10 @@ def points_from_fits(rows, sources: dict[str, Source],
     """
     points, problems = [], []
     fell_back: dict[str, int] = {}
-    by_dim = {s[1]: role for role, s in sources.items() if s[0] == "dim"}
     for i, (c, res) in enumerate(rows):
-        swept_role = by_dim.get(c.x_name)
-        kind, fac = unit_kind(c.x_unit)
-        if swept_role is None or kind is None:
-            problems.append(f"{c.label}: its x axis '{c.x_name}' ({c.x_unit or 'no unit'}) "
-                            "is not set as field, frequency or angle")
-            continue
-        base = {}
-        missing = []
-        for role, src in sources.items():
-            how, what = src[0], src[1]
-            fallback = src[2] if len(src) > 2 else None
-            if role == swept_role:
-                continue
-            if how == "const":
-                base[role] = float(what)
-            elif what in c.held:
-                v, u = c.held[what]
-                base[role] = v * unit_kind(u)[1]
-            elif fallback is not None:
-                base[role] = float(fallback)
-                key = f"{what} = {fallback:g} {INTERNAL.get(role, 'deg')}"
-                fell_back[key] = fell_back.get(key, 0) + 1
-            else:
-                missing.append(what)
-        if missing:
-            problems.append(f"{c.label}: no value for {', '.join(missing)} (its file has no "
-                            "such dimension; give a value in Coordinates)")
+        swept_role, fac, base, why = curve_coords(c, sources, fell_back)
+        if why:
+            problems.append(f"{c.label}: {why}")
             continue
         rl = default_roles(res)
         for k in range(1, res.setup.n_peaks + 1):
