@@ -38,7 +38,9 @@ phase. On *auto*, both are tried and the better one is kept.
    and send** (or **Send to FMR fit** if it is already open).
 2. Each curve arrives with guessed start values (dashed line).
 3. **Fit** fits the curve on screen. **Fit all** fits every curve with the same
-   model.
+   model, one at a time: each row fills in as it is fitted, and the button reads
+   **Stop** meanwhile (about 0.25 s per 4096-point sweep, so 174 sweeps take a
+   minute). **Predict + fit the others** works the same way.
 4. In the parameter table you can type a start value, tick **Fixed**, or set
    **Min/Max**. Drag the shaded band on the plot to fit only part of the sweep.
 5. **Peaks** > 1 is for the Kittel mode plus standing spin waves. A new peak is

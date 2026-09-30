@@ -207,11 +207,14 @@ def reduce(ds: xr.Dataset, sel: Selection) -> Reduced:
 
 
 def make_curve(ds: xr.Dataset, sel: Selection, source: str | Path | None = None,
-               label: str | None = None) -> Curve:
-    """Freeze the current 1-D selection into a Curve (the numbers are copied)."""
+               label: str | None = None, da: xr.DataArray | None = None) -> Curve:
+    """Freeze the current 1-D selection into a Curve (the numbers are copied).
+
+    da: the detector, when the caller already has it (curves_along: recombining
+    a complex pair per curve was most of the 4.6 s for 174 VNA sweeps)."""
     sel = Selection.from_dict(sel.to_dict())        # detach from the caller's dict
     sel.y = None
-    da = detector(ds, sel.detector)
+    da = detector(ds, sel.detector) if da is None else da
     cplx = np.iscomplexobj(da.values)
     y_name = quantity_name(sel, cplx)
     y_unit = "rad" if (sel.part == "arg" and cplx) else units_of(ds, sel.detector)
@@ -236,7 +239,7 @@ def make_curve(ds: xr.Dataset, sel: Selection, source: str | Path | None = None,
     return Curve(x=x, y=y, label=label, x_name=sel.x, x_unit=units_of(ds, sel.x),
                  y_name=y_name, y_unit=y_unit,
                  selection=sel, source=str(source) if source else None,
-                 z=z, held=held_values(ds, sel))
+                 z=z, held=held_values(ds, sel, da))
 
 
 def _ref_style(sel: Selection) -> tuple["MapStyle", Selection]:
@@ -281,11 +284,12 @@ def _ref_name_unit(ds, sel: Selection, style: "MapStyle", name: str, unit: str):
     return name, unit
 
 
-def held_values(ds: xr.Dataset, sel: Selection) -> dict[str, tuple[float, str]]:
+def held_values(ds: xr.Dataset, sel: Selection,
+                da: xr.DataArray | None = None) -> dict[str, tuple[float, str]]:
     """{dim: (value, unit)} for every dim held at ONE index -- a dim of length 1
     too: "this sweep was at 10 GHz" is what an analysis needs, even when the
     label leaves it out as obvious."""
-    da = detector(ds, sel.detector)
+    da = detector(ds, sel.detector) if da is None else da
     out = {}
     for d in da.dims:
         if d in (sel.x, sel.y):
@@ -304,11 +308,12 @@ def curves_along(ds: xr.Dataset, sel: Selection, dim: str, indices,
     Every other dim keeps what `sel` says about it; `dim` is held at each index
     in turn.
     """
+    da = detector(ds, sel.detector)                # once, not per curve
     out = []
     for i in indices:
         s = Selection.from_dict(sel.to_dict())
         s.slices[dim] = Slice("at", int(i))
-        out.append(make_curve(ds, s, source))
+        out.append(make_curve(ds, s, source, da=da))
     return out
 
 
