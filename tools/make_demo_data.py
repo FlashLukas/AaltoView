@@ -34,6 +34,12 @@ lower field, H_ex,n = 2 A (n pi / d)^2 / Ms = 13, 52, 117, 209 mT for the
 textbook A = 3.7 pJ/m, mu0 Ms = 176 mT; alpha = 3e-4, dB0 = 0.25 mT, lines
 ~0.5 mT wide (hence 0.05 mT steps). YIG below.
 
+File 9 is the same YIG the way the lab measures it: set the field, then sweep
+the frequency with the VNA. S21 at 25-300 mT, 2-18 GHz in 1 MHz steps (the
+lines are ~10 MHz wide in frequency), with the VNA's delay, ripple and loss
+(vna_background), the exact oscillator lineshape, and a reference sweep at
+800 mT where nothing resonates below 18 GHz.
+
 A second, ANISOTROPIC film for the angle-dependent files (5, 6): Meff = 1.4 T,
 in-plane uniaxial Bu = 12 mT along 90 deg, 4-fold B4 = 18 mT along 0 deg, 6-fold
 B6 = 3 mT along 15 deg, alpha = 0.004, dB0 = 1 mT -- field in the plane at angle
@@ -348,6 +354,20 @@ def main(argv=None) -> int:
                    lin("rf_freq", 1, 20, 1901)], ["s21"])}),
         out / "2026-09-18" / "110000_vna_freq_sweeps.nc", 2100.0)
 
+    # 9 (written below 8): the YIG measured the lab's way -- field set, VNA
+    # frequency sweep; relative signal: 5 % dip, PSSW weaker
+    fields9 = np.r_[np.arange(25.0, 301.0, 25.0), 800.0]
+    f9 = np.linspace(2.0, 18.0, 16001)
+    rel = [a / YIG["amps"][0] * 0.05 for a in YIG["amps"]]
+    z9 = np.empty((fields9.size, f9.size), dtype=complex)
+    for j, b in enumerate(fields9):
+        sig = np.zeros(f9.size, dtype=complex)
+        for n, a in enumerate(rel):
+            f0, df = yig_mode(np.array([b]), n)
+            sig += a * oscillator(f9, f0[0], df[0])
+        z9[j] = vna_background(f9) * (1 + np.exp(1j * PHASE0) * sig)
+    z9 += noise(z9.shape, 3e-4)
+
     # 8. 200 nm YIG: uniform mode + PSSW n = 1-4, field sweeps at 9-16 GHz
     fy = np.arange(9.0, 17.0, 1.0)
     by = np.linspace(0.0, 520.0, 10401)
@@ -366,6 +386,15 @@ def main(argv=None) -> int:
                    {"type": "array", "param": "rf_freq", "values": fy.tolist()},
                    lin("field", 0, 520, 10401)], ["lockin"])}),
         out / "2026-09-19" / "093000_yig_200nm_field_sweeps.nc", 6200.0)
+    save(xr.Dataset(
+        complex_vars("s21", ("field", "rf_freq"), z9, ""),
+        coords={"field": coord("field", fields9, "mT"), "rf_freq": coord("rf_freq", f9, "GHz")},
+        attrs={"name": "yig_200nm_vna", "_dims": ["field", "rf_freq"],
+               "comment": "YIG 200 nm: field set, VNA S21 2-18 GHz; 800 mT = reference",
+               "recipe_json": recipe("yig_200nm_vna", "", [
+                   {"type": "array", "param": "field", "values": fields9.tolist()},
+                   lin("rf_freq", 2, 18, 16001)], ["s21"])}),
+        out / "2026-09-19" / "141500_yig_200nm_vna.nc", 5400.0)
     return 0
 
 

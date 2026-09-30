@@ -348,13 +348,18 @@ def _robust_background(A: np.ndarray, y: np.ndarray, edge: np.ndarray) -> np.nda
 
 def _candidates(x, z) -> list[int]:
     """Indices of local maxima of the smoothed |z|, most prominent first,
-    keeping only those that stand out of the noise (5 x its point-to-point
-    scatter)."""
+    keeping only those that stand out of the noise: 5 x its scatter AFTER the
+    smoothing (the point-to-point scatter / sqrt(5)). Measured before it, a
+    0.15 % PSSW of a VNA sweep -- 4 sigma per point, but 14 points wide -- was
+    left out and a made-up fifth peak took its place (2026-09-30)."""
     from scipy.signal import find_peaks
-    mag = _smooth(np.abs(z))
+    n_smooth = 5
+    mag = _smooth(np.abs(z), n_smooth)
     if mag.size < 5:
         return []
     noise = 1.4826 * np.median(np.abs(np.diff(np.abs(z)))) / np.sqrt(2)
+    if mag.size >= 2 * n_smooth:
+        noise /= np.sqrt(n_smooth)
     idx, props = find_peaks(mag, prominence=max(5 * noise, 1e-300))
     order = np.argsort(props["prominences"])[::-1]
     return [int(i) for i in idx[order]]
@@ -733,14 +738,17 @@ def _turned(start: dict[str, Spec], setup: Setup) -> dict[str, Spec]:
 
 def suspicious(res: Result) -> str:
     """Why a converged fit should still be looked at, or "" -- a peak whose
-    width or amplitude is smaller than its own error bar was not found."""
+    amplitude is under 3 sigma was not found (a made-up peak of 0.72 +- 0.41
+    passed the old 1-sigma rule, 2026-09-30), nor one whose width is not
+    determined."""
     if not res.success:
         return "did not converge"
     for k in range(1, res.setup.n_peaks + 1):
-        for p in ("hwhm", "amp"):
+        for p, sig in (("amp", 3.0), ("hwhm", 1.0)):
             v, e = res.values[f"p{k}_{p}"], res.errors.get(f"p{k}_{p}")
-            if res.vary.get(f"p{k}_{p}") and (e is None or e > abs(v)):
-                return f"peak {k}: {p} not determined (error {'?' if e is None else f'{e:.2g}'})"
+            if res.vary.get(f"p{k}_{p}") and (e is None or sig * e > abs(v)):
+                what = "amplitude under 3 sigma" if p == "amp" else "width not determined"
+                return f"peak {k}: {what} (error {'?' if e is None else f'{e:.2g}'})"
     return ""
 
 

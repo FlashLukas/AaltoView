@@ -151,6 +151,29 @@ waves at lower field, with H_ex,n = 2A(nπ/d)²/Ms = 13, 52, 117 and 209 mT
      own, and A per mode is shown when d and μ0Ms are given. That's a check
      of the n² law: pinning or a wrong d shows up as a different A per mode.
 
+## The lab's way: field set, VNA frequency sweep
+
+The demo file `141500_yig_200nm_vna.nc` is the same YIG measured this way.
+It has S21 at 25–300 mT, 2–18 GHz in 1 MHz steps (the lines are only about
+10 MHz wide in frequency), a 3.2 ns cable delay, standing-wave ripple, a
+sloped loss, and a reference sweep at 800 mT, where nothing resonates below
+18 GHz.
+
+1. **Send all 13 sweeps.** They arrive with the oscillator lineshape and the
+   delay option on, and are drawn with the delay taken out.
+2. **Reference:** choose `field = 800 mT`, divide. That removes the ripple
+   and the delay. Record your own reference on the same frequency grid.
+3. **Set peaks = 5 and click Fit all.** The reference itself isn't fitted.
+4. **Watch the ⚠ marks.** At 25 mT the uniform mode is at 1.98 GHz, below
+   the sweep, so the fifth peak there is made up and gets flagged
+   ("amplitude under 3 sigma"). Untick that sweep's points in the Dispersion
+   tab, or fit it with 4 peaks. Left in, it shifts the order-based roles and
+   pulls M_eff to 179 mT.
+5. **Dispersion:** click **Assign PSSW by order** (PSSW lie at *higher*
+   frequency here). Set the exchange stiffness A with d = 200 and
+   μ0Ms = 176, then click **Fit**. That gives back A = 3.700 pJ/m,
+   M_eff = 176.0 mT and γ/2π = 28.00 GHz/T.
+
 ## Working through a series
 
 - **Settings carry over.** When you set up or fit one curve and move to the
