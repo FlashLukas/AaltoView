@@ -260,10 +260,13 @@ class FFTWindow(QtWidgets.QWidget):
         lv.addWidget(_tag("MODEL  Kalinikos-Slavin, lowest thickness mode, in-plane M"))
         g = QtWidgets.QGridLayout()
         self.pinning = _combo([("Guslienko (dipolar pinning: w_eff)", "guslienko"),
-                               ("unpinned edges (w)", "unpinned")],
+                               ("unpinned edges (w)", "unpinned"),
+                               ("none: infinite film (k_y = 0)", "none")],
                               "k_y = n π / w_eff across the stripe. Guslienko et al., PRB 66, "
                               "132402 (2002):\nw_eff = w D/(D − 2), D = 2π / (p (1 + 2 ln 1/p)),"
-                              " p = d / w.")
+                              " p = d / w.\nnone: no width mode -- w and n are not used or "
+                              "fitted.")
+        self.pinning.currentIndexChanged.connect(self._fill_params)
         self.robust = QtWidgets.QCheckBox("robust (a stray peak counts less)")
         g.addWidget(QtWidgets.QLabel("width modes"), 0, 0)
         g.addWidget(self.pinning, 0, 1)
@@ -596,9 +599,11 @@ class FFTWindow(QtWidgets.QWidget):
     def _fill_params(self):
         self._filling = True
         self.mtable.setRowCount(len(W.PARAMS))
+        unused = self.pinning.currentData() == "none"
         for r, (n, p) in enumerate(W.PARAMS.items()):
             sp = self.specs[n]
             err = self.result.errors.get(n) if self.result else None
+            off = unused and n in W.WIDTH_PARAMS    # no width mode: greyed, not fitted
             cells = [n, f"{sp.value:.6g}", "" if err is None else f"{err:.2g}", p[0], None,
                      "" if not np.isfinite(sp.min) else f"{sp.min:g}",
                      "" if not np.isfinite(sp.max) else f"{sp.max:g}"]
@@ -612,7 +617,9 @@ class FFTWindow(QtWidgets.QWidget):
                     if c in (0, 2, 3):
                         it.setFlags(QtCore.Qt.ItemIsEnabled | QtCore.Qt.ItemIsSelectable)
                 if c == 0:
-                    it.setToolTip(p[1])
+                    it.setToolTip(p[1] + ("  -- not used: width modes = none" if off else ""))
+                if off:
+                    it.setFlags(QtCore.Qt.ItemFlag(0))
                 self.mtable.setItem(r, c, it)
         self.mtable.resizeColumnsToContents()
         self._filling = False

@@ -106,3 +106,14 @@ def test_a_real_input_offers_no_imaginary_part(win, stripe_map):
     win.add_maps([real])
     assert win.part.currentData() == "real"
     assert not win.part.model().item(win.part.findData("imag")).isEnabled()
+
+
+def test_width_modes_can_be_switched_off(win):
+    from PySide6 import QtCore
+    from sw_fft import waveguide as W
+    win.pinning.setCurrentIndex(win.pinning.findData("none"))
+    for r, n in enumerate(W.PARAMS):
+        enabled = bool(win.mtable.item(r, 4).flags() & QtCore.Qt.ItemIsEnabled)
+        assert enabled == (n not in W.WIDTH_PARAMS), n
+    win.pinning.setCurrentIndex(win.pinning.findData("guslienko"))
+    assert win.mtable.item(list(W.PARAMS).index("w"), 4).flags() & QtCore.Qt.ItemIsEnabled

@@ -90,6 +90,8 @@ acts like a wider stripe:
   waveguide experiments; θ = 0 is backward volume.
 - n = 0, or w = 0, gives an infinite film.
 - **unpinned edges** uses the geometric w instead of w_eff.
+- **none: infinite film** switches the width mode off (k_y = 0). w and n are
+  then greyed out and not fitted, even if their Fit box was ticked.
 
 **Parameters.** γ/2π, μ0Ms, A, d, w, n, B and θ. Each can be fitted or held,
 with optional bounds, and comes with a 1σ error. The fit is least squares in

@@ -91,3 +91,22 @@ def test_the_fit_gives_back_what_was_put_in():
         W.fit(pts, specs)
     specs["B"].vary = False
     assert W.fit(pts, specs).values["Ms"] == pytest.approx(1000.0, rel=5e-3)
+
+
+def test_no_width_mode_is_the_infinite_film_and_w_n_are_not_fitted():
+    stripe = dict(PY, w=2.0, n=1.0)
+    k = np.linspace(0.5, 8.0, 20)
+    film = W.frequency(k, dict(PY, w=0.0, n=0.0))
+    np.testing.assert_allclose(W.frequency(k, stripe, "none"), film)
+    assert W.width_wavevector(stripe, "none") == 0.0
+    pts = [W.Point(k=kk, f=ff) for kk, ff in zip(k, film)]
+    specs = W.default_specs()
+    for n, v in stripe.items():
+        specs[n].value = v
+    specs["Ms"] = W.Spec(800.0, True, 1, 3000)
+    specs["w"].vary = specs["n"].vary = True            # ticked, but meaningless here
+    res = W.fit(pts, specs, pinning="none")
+    assert res.values["Ms"] == pytest.approx(1000.0, rel=1e-6)
+    assert not res.vary["w"] and not res.vary["n"]
+    names = [r[0] for r in res.rows()]
+    assert "w" not in names and "n" not in names and "w_eff" not in names
