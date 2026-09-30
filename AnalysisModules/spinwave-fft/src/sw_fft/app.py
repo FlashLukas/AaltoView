@@ -340,6 +340,8 @@ class FFTWindow(QtWidgets.QWidget):
         self.dplot.setLabel("bottom", "k (rad/µm)")
         self.dplot.setLabel("left", "f (GHz)")
         self.dplot.addLegend(offset=(10, 10))
+        self.dplot.setToolTip("Click a point to leave it out of the fit (again: take it back).")
+        self.dplot.scene().sigMouseClicked.connect(self._dispersion_clicked)
         rv.addWidget(self.dplot, 3)
         rv.addWidget(_tag("RESULTS"))
         self.rtable = QtWidgets.QTableWidget(0, 5)
@@ -592,6 +594,17 @@ class FFTWindow(QtWidgets.QWidget):
             if d < dist:
                 best, dist = i, d
         return best
+
+    def _dispersion_clicked(self, ev):
+        """A point on the Dispersion plot: left out / taken back, as on the map."""
+        plot = self.dplot.getPlotItem()
+        if not plot.sceneBoundingRect().contains(ev.scenePos()):
+            return
+        hit = self._nearest_peak(plot, ev.scenePos(),
+                                 lambda j: (self.points[j].k, self.points[j].f),
+                                 range(len(self.points)))
+        if hit is not None:
+            self.toggle_peak(hit)
 
     def _draw_model_on_map(self, inp, sp):
         """The fitted f(k) on the FFT map -- when its y axis is the frequency."""
