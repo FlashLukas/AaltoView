@@ -144,3 +144,44 @@ def test_tr_moke_unfold_in_the_window(win, stripe_map):
     win.unfold_invert.setChecked(False)
     win.f_src.setCurrentIndex(win.f_src.findData("constant"))
     assert "unfold OFF" in win.status.text()
+
+
+def test_follow_and_click_a_peak_to_leave_it_out(win, stripe_map):
+    from PySide6 import QtCore
+    ds, path, m = stripe_map
+    win.add_maps([m])
+    win.line = 40                                                 # 7 GHz: a clear peak
+    win.follow.setChecked(True)
+    win.follow_w.setText("0.4")
+    win.find_peaks()
+    assert len(win.peaks) == 81 and "following from rf_freq = 7000 MHz" in win.status.text()
+    assert all(p.k > 0 for p in win.peaks)
+    # the k unit changes: the bandwidth goes with it
+    win.k_unit.setCurrentIndex(win.k_unit.findData("1/um"))
+    assert float(win.follow_w.text()) == pytest.approx(0.4 / (2 * np.pi), rel=1e-3)
+    win.k_unit.setCurrentIndex(win.k_unit.findData("rad/um"))
+    # a click ON a peak: left out, a grey cross; again: back
+    win.resize(1400, 900)
+    win.show()
+    QtWidgets.QApplication.processEvents()
+    j = 10
+    p = win.peaks[j]
+    scene = win.mplot.vb.mapViewToScene(QtCore.QPointF(p.k, win.current().y[p.line]))
+
+    class Click:
+        def scenePos(self):
+            return scene
+    win._map_clicked(Click())
+    assert not win.points[j].use and win.line == p.line
+    assert "left out" in win.status.text() and "80 of 81" in win.status.text()
+    assert win.ptable.item(j, 0).checkState() == QtCore.Qt.Unchecked
+    win._map_clicked(Click())
+    assert win.points[j].use
+    # a click away from every peak only picks the line
+    far = win.mplot.vb.mapViewToScene(QtCore.QPointF(-1.5, win.current().y[5]))
+
+    class Away:
+        def scenePos(self):
+            return far
+    win._map_clicked(Away())
+    assert all(q.use for q in win.points) and win.line == 5

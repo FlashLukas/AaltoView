@@ -85,9 +85,35 @@ Per line, the strongest local maxima are found:
 - inside **|k| from … to** (leave out what is left of the offset near k = 0);
 - only those reaching a set fraction of the line's highest point.
 
+Two thresholds decide what counts as a peak:
+
+| threshold | a peak must be at least … | use it to |
+|---|---|---|
+| **≥ × highest** | this fraction of the line's own highest point (in the allowed range and side) | keep small side bumps out when finding several peaks. On a line with **no** wave the highest noise bump still passes. |
+| **≥ × noise** | this many times the line's noise: the median \|FFT\| over the allowed range (a peak is a few bins, the rest is the floor) | keep lines without a wave empty. 3 to 5 is a good start; *off* by default. |
+
 Each position is refined between bins with a parabola through log|F|. The
-table gives, per peak: the line, k (signed), |k|, λ, the amplitude and the
-width in k.
+table gives, per peak: the line, k (signed), |k|, λ, the amplitude, the width
+in k and the signal-to-noise ratio (SNR).
+
+**Follow the last peak, within ±…** follows a branch instead of taking each
+line's strongest peak:
+- On each line it looks only within ± the bandwidth (in the k unit) of the
+  peak found on the line before.
+- It starts on the line shown below the map (click a line with a clear peak
+  first), with that line's peaks, and walks out in both directions in the
+  order of the lines' y.
+- A line with nothing in the window keeps the last position, so the branch is
+  picked up again after a gap. A stronger line elsewhere in k (the offset, a
+  second mode, a leak) cannot pull the search away.
+- "≥ × highest" still counts against the whole line, so a window over noise
+  finds nothing.
+
+**Click a peak to leave it out.** Clicking its circle on the map, or its
+marker on the line plot, turns it into a grey cross and unticks it in the
+Dispersion tab's points; clicking again takes it back. Clicking the map away
+from any peak just shows that line below. A peak left out stays out when the
+peaks are found again, as long as it is found at the same place.
 
 ## Dispersion: Kalinikos–Slavin + Guslienko
 

@@ -80,7 +80,9 @@ script** does it as the file is read: choose one in **load with** (Files
 panel, above the file list) and every file you open goes through it. The map,
 the 1D plots, every export, the notebook (it loads through the same script)
 and the analysis modules all see the corrected data. The status line says
-which script was used, and a script that fails shows nothing rather than an
+which script was used. **Reload** (next to the list) reads the open file
+again through the chosen script, which also picks up a script you have just
+edited. A script that fails shows nothing, never the previous picture or an
 uncorrected file.
 
 Scripts are `.py` files in **`LoadingScripts/`**: drop one in and it is

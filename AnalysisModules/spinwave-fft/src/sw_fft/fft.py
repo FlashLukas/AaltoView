@@ -221,6 +221,9 @@ class PeakSettings:
     k_min: float = 0.0                # |k| >= k_min (leave out the DC remainder)
     k_max: float = np.inf
     min_rel: float = 0.1              # a peak must reach this fraction of the line's highest
+    #: a peak must be this many times the line's NOISE: the median |F| over the
+    #: allowed range (a peak is a few bins; the rest is the floor). 0 = off
+    min_snr: float = 0.0
 
 
 SIDES = ("both", "positive", "negative")
@@ -232,6 +235,7 @@ class Peak:
     k: float                          # refined position, signed
     amplitude: float                  # |F| at the peak (refined)
     fwhm: float                       # width in k (NaN if not measurable)
+    snr: float = float("nan")         # amplitude / the line's noise (median |F|)
 
 
 def _refine(k: np.ndarray, m: np.ndarray, i: int) -> tuple[float, float]:
@@ -264,9 +268,11 @@ def _fwhm(k: np.ndarray, m: np.ndarray, i: int) -> float:
     return float(cross(hi - 1, hi) - cross(lo + 1, lo))
 
 
-def find_peaks(k: np.ndarray, mag: np.ndarray, ps: PeakSettings, line: int = 0) -> list[Peak]:
+def find_peaks(k: np.ndarray, mag: np.ndarray, ps: PeakSettings, line: int = 0,
+               window: tuple[float, float] | None = None) -> list[Peak]:
     """The strongest local maxima of one |F| line inside the allowed k range,
-    strongest first."""
+    strongest first. window=(lo, hi): only there -- but "min_rel" still counts
+    against the whole allowed line, so a window over noise finds nothing."""
     k = np.asarray(k, dtype=float)
     m = np.asarray(mag, dtype=float)
     if not np.isfinite(m).any():
@@ -280,14 +286,22 @@ def find_peaks(k: np.ndarray, mag: np.ndarray, ps: PeakSettings, line: int = 0) 
         return []
     mm = np.where(allowed, m, -np.inf)
     top = np.nanmax(mm)
+    noise = float(np.nanmedian(m[allowed]))
+    floor = ps.min_snr * noise if ps.min_snr > 0 else -np.inf
+    if window is not None:
+        allowed &= (k >= window[0]) & (k <= window[1])
+        if not allowed.any():
+            return []
+        mm = np.where(allowed, m, -np.inf)
     inner = np.arange(1, m.size - 1)
     is_max = (mm[inner] >= mm[inner - 1]) & (mm[inner] > mm[inner + 1]) & allowed[inner]
-    cand = inner[is_max & (mm[inner] >= ps.min_rel * top)]
+    cand = inner[is_max & (mm[inner] >= ps.min_rel * top) & (mm[inner] >= floor)]
     cand = cand[np.argsort(-m[cand])][:max(int(ps.n_peaks), 0)]
     out = []
     for i in cand:
         kk, amp = _refine(k, m, i)
-        out.append(Peak(line=line, k=kk, amplitude=amp, fwhm=_fwhm(k, m, i)))
+        out.append(Peak(line=line, k=kk, amplitude=amp, fwhm=_fwhm(k, m, i),
+                        snr=amp / noise if noise > 0 else float("inf")))
     return out
 
 
@@ -297,6 +311,51 @@ def all_peaks(sp: Spectrum, ps: PeakSettings) -> list[Peak]:
     for i in range(mag.shape[0]):
         out.extend(find_peaks(sp.k, mag[i], ps, line=i))
     return out
+
+
+def track_peaks(sp: Spectrum, ps: PeakSettings, width: float, seed: int | None = None,
+                order=None) -> list[Peak]:
+    """Peaks that FOLLOW a branch: on each line, only within +-width (in the k
+    unit) of the peak found on the line before.
+
+    It starts on the `seed` line (the one the operator is looking at; None: the
+    line with the strongest peak), with that line's ordinary peaks, and walks
+    out in both directions along `order` (the lines sorted by their y, e.g. by
+    frequency). A line with nothing in the window (a gap, a weak line) keeps
+    the last position, and the search goes on around it -- so the branch is
+    picked up again after the gap, and a strong line elsewhere in k (the
+    offset, a second mode) cannot pull the search away."""
+    mag = sp.magnitude
+    n = mag.shape[0]
+    order = list(range(n)) if order is None else [int(i) for i in order]
+    if not order:
+        return []
+    if seed is None:
+        best = [(max((p.amplitude for p in find_peaks(sp.k, mag[i], ps, i)), default=-1), i)
+                for i in order]
+        seed = max(best)[1]
+    seed_peaks = find_peaks(sp.k, mag[seed], ps, line=seed)
+    found = {seed: seed_peaks}
+    one = PeakSettings(n_peaks=1, side=ps.side, k_min=ps.k_min, k_max=ps.k_max,
+                       min_rel=ps.min_rel, min_snr=ps.min_snr)
+    at = order.index(seed)
+    for step in (1, -1):
+        last = [p.k for p in seed_peaks]
+        j = at + step
+        while 0 <= j < len(order) and last:
+            i = order[j]
+            here, nxt = [], []
+            for k0 in last:
+                got = find_peaks(sp.k, mag[i], one, line=i, window=(k0 - width, k0 + width))
+                if got and all(abs(got[0].k - q.k) > 1e-12 for q in here):
+                    here.append(got[0])
+                    nxt.append(got[0].k)
+                else:
+                    nxt.append(k0)                  # nothing here: keep looking there
+            found[i] = here
+            last = nxt
+            j += step
+    return [p for i in order for p in found.get(i, [])]
 
 
 

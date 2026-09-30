@@ -88,7 +88,9 @@ def peak_columns(inp: I.Input, sp: F.Spectrum, peaks: list[F.Peak],
             Column("amplitude", inp.z_unit, "|FFT| at the peak (a pure wave: its amplitude)",
                    [p.amplitude for p in peaks]),
             Column("fwhm", ku, "peak width in k (the window's, for a long wave)",
-                   [p.fwhm for p in peaks])]
+                   [p.fwhm for p in peaks]),
+            Column("snr", "", "amplitude / the line's noise (median |FFT| over the allowed k)",
+                   [p.snr for p in peaks])]
     if points is not None:
         cols += [Column("f", "GHz", "frequency used in the dispersion", [p.f for p in points]),
                  Column("B", "mT", "field used in the dispersion", [p.B for p in points])]

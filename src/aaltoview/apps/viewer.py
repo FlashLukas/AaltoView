@@ -113,6 +113,7 @@ class FileBrowser(QtWidgets.QWidget):
 
     fileChosen = QtCore.Signal(str)
     scriptChanged = QtCore.Signal()
+    reloadRequested = QtCore.Signal()
     COLS = ("Measurement", "Measured", "Axes (outer → inner)", "Shape", "Detectors")
 
     def __init__(self, folder: Path | None = None):
@@ -154,8 +155,15 @@ class FileBrowser(QtWidgets.QWidget):
         row.addWidget(self.script_combo, 1)
         rescan = QtWidgets.QPushButton("↻"); rescan.setFixedWidth(32)
         rescan.setToolTip("Look for new scripts in the LoadingScripts folder")
-        rescan.clicked.connect(self.fill_scripts)
+        # a lambda: clicked(bool) would hand False to fill_scripts as the script
+        # to select -- and quietly switch the choice back to none
+        rescan.clicked.connect(lambda: self.fill_scripts())
         row.addWidget(rescan)
+        reload = QtWidgets.QPushButton("Reload")
+        reload.setToolTip("Read the open file again, through the script chosen here (a script\n"
+                          "you have just edited is read anew too).")
+        reload.clicked.connect(lambda: self.reloadRequested.emit())
+        row.addWidget(reload)
         v.addLayout(row)
         self.fill_scripts()
 
@@ -1465,6 +1473,7 @@ class ViewerWidget(QtWidgets.QWidget):
         self.browser = FileBrowser(folder)
         self.browser.fileChosen.connect(self.load_file)
         self.browser.scriptChanged.connect(self._script_changed)
+        self.browser.reloadRequested.connect(self.reload)
         split.addWidget(self.browser)
         self.tabs = QtWidgets.QTabWidget()
         self.map = MapPanel(self)
@@ -1553,12 +1562,31 @@ class ViewerWidget(QtWidgets.QWidget):
                 self.map.say(f"{Path(path).name}: the loading script '{script.name}' "
                              f"failed: {exc}  (load with: none shows the file as saved)",
                              error=True)
+                self._clear_view(Path(path), f"{Path(path).name}   ·   NOT shown: "
+                                             f"{script.name} failed")
                 return
         self.set_dataset(data, Path(path))
         if script is not None:
             note = data.attrs.get("tr_moke_unfold", "")
             self.current.setText(f"{Path(path).name}   ·   loaded with {script.name}")
             self.map.say(f"loaded with {script.name}" + (f": {note}" if note else ""))
+
+    def _clear_view(self, path: Path, text: str) -> None:
+        """Nothing on screen -- never the previous or the uncorrected data. The
+        path is kept, so Reload can try again (e.g. after fixing the script)."""
+        self.ds, self.path = None, path
+        self.map.img.setVisible(False)
+        self.lines.redraw()
+        self.current.setText(text)
+
+    def reload(self) -> None:
+        """Read the open file again, through the chosen script."""
+        if self.path is None or not self.path.exists():
+            self.map.say("Reload: no file is open -- or this run was never saved to one "
+                         "(save it first)", error=True)
+            return
+        self.browser.fill_scripts()                  # a script added meanwhile, same choice
+        self.load_file(self.path)
 
     @property
     def loading_script(self):
