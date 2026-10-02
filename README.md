@@ -29,6 +29,9 @@ simulated data (see [Try it without lab data](#try-it-without-lab-data)).*
   at one value (a slider showing the coordinate) or average it (all of it, or a
   range). Colour map, inverse, symmetric limits, automatic (percentile) or typed
   limits — or drag the colour bar — log, and normalise each row or column.
+  **Drawing**: with more points than screen pixels, each pixel shows a block's
+  average (smooth), max (keeps a one-point peak, e.g. a tone in a long
+  spectrum) or min (keeps a dip); zoomed in, every point is drawn as it is.
   **Reference**: divide by (or subtract) one line, e.g. a VNA field sweep ÷ the
   highest field, where the resonance is out of the band; ÷ the median line when
   no reference was measured; or derivative-divide along X or Y. It is applied
