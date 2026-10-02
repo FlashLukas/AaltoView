@@ -44,6 +44,7 @@ import argparse
 import io
 import sys
 import tempfile
+import warnings
 from pathlib import Path
 
 import numpy as np
@@ -79,6 +80,64 @@ def _pg_cmap(name: str, invert: bool) -> pg.ColorMap:
     if invert:
         cmap.reverse()
     return cmap
+
+
+#: how a map with more points than screen pixels combines each block of them
+#: into one pixel. "mean" (pyqtgraph's own) suits a noisy map; a ONE-point
+#: line -- a generator tone in a 21000-point spectrum on ~600 pixel rows -- is
+#: averaged with ~35 neighbours and vanishes (2026-10-02): "max" keeps a peak,
+#: "min" a dip (an absorption line in |S21|).
+MAP_REDUCE = {"average": "mean", "max (keeps peaks)": "max", "min (keeps dips)": "min"}
+
+
+def block_reduce(data, n, axis=0, xvals="subsample", *, nanPolicy="propagate", how="max"):
+    """pyqtgraph's functions.downsample, with max / min instead of the mean
+    (same signature: ImageItem.render calls it). NaN (a hole in the scan) is
+    skipped; an all-NaN block stays NaN."""
+    if hasattr(axis, "__len__"):
+        n = n if hasattr(n, "__len__") else [n] * len(axis)
+        for a, k in zip(axis, n):
+            data = block_reduce(data, k, a, how=how)
+        return data
+    if n <= 1:
+        return data
+    m = int(data.shape[axis] / n)
+    shape = list(data.shape)
+    shape[axis] = m
+    shape.insert(axis + 1, n)
+    sl = [slice(None)] * data.ndim
+    sl[axis] = slice(0, m * n)
+    blocks = data[tuple(sl)].reshape(shape)
+    with np.errstate(invalid="ignore"), warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)          # all-NaN blocks
+        return (np.nanmax if how == "max" else np.nanmin)(blocks, axis=axis + 1)
+
+
+class MapImage(pg.ImageItem):
+    """The map's ImageItem, whose downsampling (more points than pixels) is
+    the mean, the max or the min of each block -- `reduce`, see MAP_REDUCE."""
+
+    def __init__(self, *a, **kw):
+        super().__init__(*a, **kw)
+        self.reduce = "mean"
+
+    def set_reduce(self, how: str) -> None:
+        if how != self.reduce:
+            self.reduce = how
+            self._renderRequired = True
+            self.update()
+
+    def render(self):
+        if self.reduce == "mean":
+            return super().render()
+        fn = pg.functions
+        mean = fn.downsample
+        how = self.reduce
+        fn.downsample = lambda *a, **kw: block_reduce(*a, how=how, **kw)
+        try:
+            return super().render()
+        finally:
+            fn.downsample = mean
 
 
 #: above this many points a line is drawn WITHOUT antialiasing
@@ -696,6 +755,19 @@ class MapPanel(_Panel):
         st.insertWidget(st.indexOf(self.lo_edit) + 1, self.hi_edit)
         self.norm_combo.currentIndexChanged.connect(self.refresh)
         st.addWidget(self.norm_combo)
+        st.addWidget(QtWidgets.QLabel("drawing"))
+        self.reduce_combo = QtWidgets.QComboBox()
+        for text, how in MAP_REDUCE.items():
+            self.reduce_combo.addItem(text, how)
+        self.reduce_combo.setToolTip(
+            "When the map has more points than the screen has pixels, each pixel shows a\n"
+            "block of points: their average (smooth, but a ONE-point line -- a narrow\n"
+            "peak in a long spectrum -- is averaged away), their max (keeps peaks) or\n"
+            "their min (keeps dips). Zoom in and every point is drawn as it is.\n"
+            "Only the drawing: exported data and figures are the full data.")
+        self.reduce_combo.currentIndexChanged.connect(
+            lambda *_: self.img.set_reduce(self.reduce_combo.currentData()))
+        st.addWidget(self.reduce_combo)
         st.addStretch(1)
         v.addLayout(st)
 
@@ -748,7 +820,7 @@ class MapPanel(_Panel):
         # than the screen: without it, 16001 VNA frequencies in ~500 pixel rows
         # were drawn as single picked points -- noise, and a narrow line could
         # fall between the picks (2026-09-30)
-        self.img = pg.ImageItem(autoDownsample=True)
+        self.img = MapImage(autoDownsample=True)
         self.plot.addItem(self.img)
         self.cbar = pg.ColorBarItem(colorMap=_pg_cmap("magma", False), interactive=True)
         self.cbar.setImageItem(self.img, insert_in=self.plot)

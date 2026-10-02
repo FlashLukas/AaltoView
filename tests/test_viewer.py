@@ -332,3 +332,75 @@ def test_a_long_noisy_sweep_paints_fast(viewer, tmp_path):
     t = time.perf_counter()
     lines.glw.grab()
     assert time.perf_counter() - t < 2.0
+
+
+# ───────────────────── drawing a map with more points than pixels ─────────────
+
+def test_block_reduce_max_and_min_keep_a_one_point_line():
+    from aaltoview.apps.viewer import block_reduce
+    data = np.zeros((6, 4))
+    data[4, 1] = 9.0
+    data[1, 2] = -5.0
+    data[0, 0] = np.nan
+    mx = block_reduce(data, 3, axis=0, how="max")
+    mn = block_reduce(data, 3, axis=0, how="min")
+    assert mx.shape == (2, 4) and mx[1, 1] == 9.0 and mx[0, 0] == 0.0   # NaN skipped
+    assert mn[0, 2] == -5.0
+    assert np.isnan(block_reduce(np.full((4, 2), np.nan), 2, how="max")).all()
+
+
+def test_a_one_point_line_survives_the_drawing_with_max(viewer):
+    """A spectrum analyser map: 21000 frequencies, a generator tone ONE point
+    wide at each setting (2026-10-02). On a ~200-pixel map, pyqtgraph's average
+    over ~100 points loses it; 'max' keeps it, exactly as high."""
+    n_f, n_set = 21000, 40
+    f = np.linspace(0.0, 4.4, n_f)                                  # GHz
+    z = np.full((n_set, n_f), -75.0)                                # dBm, the floor
+    rows = np.arange(n_set)
+    cols = (np.linspace(0.1, 0.9, n_set) * n_f).astype(int)        # the tone, 1 point
+    z[rows, cols] = -20.0
+    ds = xr.Dataset({"trace": (("setting", "freq"), z, {"units": "dBm"})},
+                    coords={"setting": ("setting", np.arange(n_set) * 1.0, {"units": ""}),
+                            "freq": ("freq", f, {"units": "GHz"})},
+                    attrs={"dims": "setting,freq"})
+    viewer.set_dataset(ds, None)
+    m = viewer.map
+    m.controls.x_combo.setCurrentText("freq")
+    m.controls.y_combo.setCurrentText("setting")
+    viewer.resize(700, 500)
+    viewer.show()
+    QtWidgets.QApplication.processEvents()
+
+    def drawn_max():
+        m.img._renderRequired = True
+        m.img.render()
+        xds, yds = m.img._lastDownsample
+        assert xds > 20                                             # it IS downsampled
+        return float(np.nanmax(m.img._last_drawn))
+
+    # what render() handed on: catch the downsampled image
+    from aaltoview.apps import viewer as VW
+    orig = VW.pg.ImageItem.render
+
+    def spy(self):
+        import pyqtgraph.functions as fn
+        ds_ = fn.downsample
+
+        def keep(*a, **kw):
+            out = ds_(*a, **kw)
+            self._last_drawn = out
+            return out
+        fn.downsample = keep
+        try:
+            return orig(self)
+        finally:
+            fn.downsample = ds_
+    VW.pg.ImageItem.render, saved = spy, orig
+    try:
+        assert m.img.reduce == "mean"
+        assert drawn_max() < -60.0                                  # averaged away
+        m.reduce_combo.setCurrentIndex(m.reduce_combo.findData("max"))
+        assert m.img.reduce == "max"
+        assert drawn_max() == pytest.approx(-20.0)                  # kept, at its height
+    finally:
+        VW.pg.ImageItem.render = saved
