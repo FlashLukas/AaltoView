@@ -56,19 +56,27 @@ SERVER_NAME = server_name()
 
 
 def _request(message: dict, timeout_ms: int, name: str | None) -> bool:
-    """One request to the running viewer; True if it answered 'ok'."""
+    """One request to the running viewer; True if it answered 'ok'. The whole
+    exchange shares ONE deadline of timeout_ms (the catalogue calls this on its
+    GUI thread: a viewer that accepts but never answers must not hold it longer)."""
+    import time
     from PySide6 import QtNetwork            # light: QtCore + QtNetwork only
+    deadline = time.monotonic() + timeout_ms / 1000.0
+
+    def left() -> int:
+        return max(1, int((deadline - time.monotonic()) * 1000))
+
     sock = QtNetwork.QLocalSocket()
     sock.connectToServer(name or server_name())
     try:
-        if not sock.waitForConnected(timeout_ms):
+        if not sock.waitForConnected(left()):
             return False                     # nobody listening (fails at once)
         sock.write((json.dumps(message) + "\n").encode("utf-8"))
-        if not sock.waitForBytesWritten(timeout_ms):
+        if not sock.waitForBytesWritten(left()):
             return False
         reply = b""
         while not reply.endswith(b"\n"):
-            if not sock.waitForReadyRead(timeout_ms):
+            if time.monotonic() >= deadline or not sock.waitForReadyRead(left()):
                 return False                 # listening but not answering: start anew
             reply += bytes(sock.readAll())
         return reply.strip() == b"ok"

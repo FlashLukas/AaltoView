@@ -185,3 +185,21 @@ print(json.dumps(replies), big, is_running())
     assert json.loads(replies) == ["error"] * 6
     assert big == "error" and alive.strip() == "True"
     assert window.listener.server.isListening()
+
+
+def test_a_viewer_that_never_answers_costs_one_timeout(name, app):
+    """Listening but silent (busy, or hung): send_to_running gives up after its
+    ONE timeout in total -- the catalogue calls it on its GUI thread."""
+    from PySide6 import QtNetwork
+    server = QtNetwork.QLocalServer()
+    assert server.listen(name)                     # accepts, never answers
+    try:
+        out = _in_child("import time\n"
+                        "from aaltoview.apps.single_instance import send_to_running\n"
+                        "t = time.perf_counter()\n"
+                        "ok = send_to_running('x.nc', timeout_ms=400)\n"
+                        "print(ok, round(time.perf_counter() - t, 3))", name, app)
+    finally:
+        server.close()
+    ok, secs = out.split()
+    assert ok == "False" and float(secs) < 0.6
