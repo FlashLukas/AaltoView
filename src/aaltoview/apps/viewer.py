@@ -40,7 +40,6 @@ Run:
 
 from __future__ import annotations
 
-import argparse
 import io
 import sys
 import tempfile
@@ -1709,6 +1708,14 @@ class ViewerWindow(QtWidgets.QMainWindow):
         v.addWidget(self.viewer, 1)
         if file:
             QtCore.QTimer.singleShot(0, lambda: self.viewer.load_file(file))
+        self.listener = None             # single_instance.Listener, when this one listens
+
+    # what single_instance.Listener needs: a file sent by another start
+    def load_file(self, path) -> None:
+        self.viewer.load_file(path)
+
+    def say(self, text: str, error: bool = False) -> None:
+        self.viewer.map.say(text, error=error)
 
 
 def _settings() -> QtCore.QSettings:
@@ -1760,13 +1767,16 @@ def configure_pyqtgraph() -> None:
                         background=C["code_bg"], foreground=C["text"])
 
 
-def main(argv=None) -> int:
-    ap = argparse.ArgumentParser(description="AaltoView")
-    ap.add_argument("file", nargs="?", help="a measurement (.nc) to open")
-    ap.add_argument("--folder", default=None,
-                    help="data folder to list (default: the one used last time)")
-    ap.add_argument("--theme", choices=["dark", "light"], default=None)
-    args = ap.parse_args(argv)
+def main(argv=None, try_handover: bool = True) -> int:
+    """Open the viewer -- or, given a file while a viewer of this user is
+    running, hand the file to THAT window and return at once (--new-window: do
+    not). The `aaltoview` command does the same check in single_instance.main
+    BEFORE this module (pyqtgraph, xarray) is imported; here it covers a start
+    through this module (AaltoFlow's apps/viewer.py shim)."""
+    from . import single_instance as SI
+    args = SI.build_parser().parse_args(argv)
+    if try_handover and args.file and not args.new_window and SI.send_to_running(args.file):
+        return 0
 
     set_theme(args.theme or DEFAULT_THEME)        # BEFORE any widget is built
     configure_pyqtgraph()
@@ -1786,6 +1796,11 @@ def main(argv=None) -> int:
     # test or tools/render_docs.py never inherits the operator's choice
     win.viewer.set_loading_script(last_script())
     win.show()
+    # the window files are handed to -- unless another viewer already is one
+    # (a start without a file, or --new-window, while a viewer runs)
+    if not SI.is_running():
+        win.listener = SI.Listener(win)
+        win.listener.start()
     return app.exec()
 
 

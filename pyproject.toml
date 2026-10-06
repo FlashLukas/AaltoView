@@ -27,7 +27,7 @@ origin = [
 ]
 
 [project.scripts]
-aaltoview = "aaltoview.apps.viewer:main"
+aaltoview = "aaltoview.apps.single_instance:main"   # hands a file to a running viewer first
 
 # Analysis modules are DROPPED into AnalysisModules/<name>/: a folder with a
 # module.toml (what the viewer lists) and a pyproject.toml (what it needs).

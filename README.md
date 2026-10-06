@@ -170,6 +170,12 @@ installed; without it, every other export still works.
 It starts in the folder you used last time (or the AaltoFlow suite's data
 directory, if the suite is installed on the same PC).
 
+**One window.** Opening a file from AaltoFlow's catalogue, or with
+`aaltoview file.nc`, while a viewer is already running loads it in that window
+and brings it to the front (about half a second, against several seconds for a
+new viewer). Use `--new-window` to force a second one. A start without a file
+(the launcher's Data viewer button) still opens a new window.
+
 ## Try it without lab data
 
 ```bash
