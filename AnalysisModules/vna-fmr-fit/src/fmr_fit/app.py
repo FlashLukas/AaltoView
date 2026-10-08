@@ -296,16 +296,34 @@ class FitWindow(QtWidgets.QWidget):
         rv = QtWidgets.QVBoxLayout(right)
         rv.setContentsMargins(8, 0, 0, 0)
         rv.setSpacing(6)
+        self.two_axes = QtWidgets.QCheckBox("Im on its own axis (right)")
+        self.two_axes.setChecked(True)
+        self.two_axes.setToolTip(
+            "Re on the left axis, Im on the right, each scaled to itself: a VNA's Re\n"
+            "sits near 1 and Im near 0, and on one shared scale the resonance is a few\n"
+            "pixels. Drag or scroll on the right axis to scale Im alone.")
+        self.two_axes.toggled.connect(lambda *_: self._redraw())
+        rv.addWidget(self.two_axes)
         self.glw = pg.GraphicsLayoutWidget()
         self.plot = self.glw.addPlot(row=0, col=0)
         self.legend = self.plot.addLegend(offset=(-10, 10))
+        # the right axis (asked for 2026-10-08): a second view, x linked, drawn
+        # BEHIND the main one so the range band, Ctrl+click and zoom keep working
+        self.vb2 = pg.ViewBox()
+        self.vb2.setZValue(-100)
+        self.plot.scene().addItem(self.vb2)
+        self.plot.getAxis("right").linkToView(self.vb2)
+        self.vb2.setXLink(self.plot)
+        self.plot.vb.sigResized.connect(
+            lambda *_: self.vb2.setGeometry(self.plot.vb.sceneBoundingRect()))
         self.rplot = self.glw.addPlot(row=1, col=0)
         self.rplot.setXLink(self.plot)
         self.rplot.setLabel("left", "residual")
         self.glw.ci.layout.setRowStretchFactor(0, 3)
         self.glw.ci.layout.setRowStretchFactor(1, 1)
-        _plain_axes(self.plot)
+        _plain_axes(self.plot, self.plot.getAxis("right"))
         _plain_axes(self.rplot)
+        self.plot.hideAxis("right")
         for plot in (self.plot, self.rplot):
             # long sweeps: draw what the screen can show, not every point
             plot.setClipToView(True)            # only what is in view is drawn
@@ -938,9 +956,15 @@ class FitWindow(QtWidgets.QWidget):
         def frame(x, v):
             return v * un(x) if un is not None else v
 
+        # Re left, Im right (each scaled to itself) -- complex data, box ticked
+        two = self.two_axes.isChecked() and len(parts) == 2
+        self.two_axes.setEnabled(len(parts) == 2)
+        view = {"Re": self.plot, "Im": self.vb2 if two else self.plot}
+
         for name, fn, col in parts:
-            self._add(self.plot, _points(shown.x, fn(frame(shown.x, shown.y)), col, 4,
-                                         name=f"{name} data"))
+            self._add(view.get(name, self.plot),
+                      _points(shown.x, fn(frame(shown.x, shown.y)), col, 4,
+                              name=f"{name} data"))
         model_vals = None
         xs = None
         if e.result is not None and not show_start:
@@ -966,18 +990,34 @@ class FitWindow(QtWidgets.QWidget):
         if model_vals is not None:
             style = QtCore.Qt.SolidLine if label == "fit" else QtCore.Qt.DashLine
             for name, fn, col in parts:
-                self._add(self.plot, pg.PlotDataItem(
+                self._add(view.get(name, self.plot), pg.PlotDataItem(
                     xs, fn(model_vals), pen=pg.mkPen(C["accent"] if len(parts) == 1 else col,
                                                      width=2, style=style),
                     name=f"{name} {label}"))
         self.plot.setLabel("bottom", axis_title(c.x_name, c.x_unit))
-        self.plot.setLabel("left", M.y_title(c, e.setup, unwound=un is not None))
+        title = M.y_title(c, e.setup, unwound=un is not None)
+        if two:
+            self.plot.showAxis("right")
+            self.plot.setLabel("left", f"Re {title}", color=TAB10[0])
+            self.plot.setLabel("right", f"Im {title}", color=TAB10[3])
+            self.vb2.setGeometry(self.plot.vb.sceneBoundingRect())
+            self.vb2.enableAutoRange(axis=pg.ViewBox.YAxis)
+        else:
+            self.plot.hideAxis("right")
+            self.plot.setLabel("left", title, color=C["text"])
         self.rplot.setLabel("bottom", axis_title(c.x_name, c.x_unit))
         self._thin()
 
     def _add(self, plot, item):
         plot.addItem(item)
         self._items.append((plot, item))
+        if plot is self.vb2:
+            # a bare ViewBox: no legend entry and no clip-to-view of its own
+            name = item.opts.get("name") if hasattr(item, "opts") else None
+            if name:
+                self.legend.addItem(item, name)
+            if hasattr(item, "setClipToView"):
+                item.setClipToView(True)
 
     def _thin(self, *_):
         """Every k-th symbol when more than MAX_SYMBOLS would be in view."""
