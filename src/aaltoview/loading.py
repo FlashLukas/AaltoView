@@ -34,12 +34,11 @@ from pathlib import Path
 import numpy as np
 import xarray as xr
 
+from . import home
 from .data import complex_names
 
 SCRIPTS_ENV = "AALTOVIEW_LOADING_SCRIPTS"
 SCRIPTS_DIR = "LoadingScripts"
-#: the repository this package runs from (editable install)
-REPO = Path(__file__).resolve().parents[2]
 #: the attribute a loaded dataset carries: which script made it
 ATTR = "aaltoview_loading_script"
 
@@ -53,7 +52,7 @@ class Script:
 
 def script_dirs() -> list[Path]:
     dirs = [Path(p) for p in os.environ.get(SCRIPTS_ENV, "").split(os.pathsep) if p]
-    dirs.append(REPO / SCRIPTS_DIR)
+    dirs.append(home.repo() / SCRIPTS_DIR)   # the checkout's, also from scan-core
     return [d for d in dirs if d.is_dir()]
 
 

@@ -195,6 +195,7 @@ def test_a_viewer_that_never_answers_costs_one_timeout(name, app):
     assert server.listen(name)                     # accepts, never answers
     try:
         out = _in_child("import time\n"
+                        "from PySide6 import QtNetwork  # imported first: time the wait only\n"
                         "from aaltoview.apps.single_instance import send_to_running\n"
                         "t = time.perf_counter()\n"
                         "ok = send_to_running('x.nc', timeout_ms=400)\n"

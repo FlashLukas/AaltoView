@@ -50,15 +50,15 @@ from pathlib import Path
 
 import numpy as np
 
+from . import home
 from .export import Curve, MapData, Selection, map_to_curves
 
 PROTOCOL = 1
 BEACON_ENV = "AALTOVIEW_ANALYSIS_DIR"      # tests point this at a temp folder
 MODULES_ENV = "AALTOVIEW_MODULES"          # extra module folders, os.pathsep-separated
 MODULES_DIR = "AnalysisModules"
-#: the repository this package runs from (editable install); None when installed
-#: as a plain dependency (scan-core), where there are no modules to offer
-REPO = Path(__file__).resolve().parents[2]
+#: (the AaltoView checkout is home.repo(): this one's own when run from a
+#: checkout, the remembered one when installed into AaltoFlow's scan-core)
 
 
 # ──────────────────────────────── available modules ───────────────────────────
@@ -92,7 +92,7 @@ def info_from_dict(d: dict, folder: Path | None = None) -> ModuleInfo:
 
 def module_dirs() -> list[Path]:
     dirs = [Path(p) for p in os.environ.get(MODULES_ENV, "").split(os.pathsep) if p]
-    dirs.append(REPO / MODULES_DIR)
+    dirs.append(home.repo() / MODULES_DIR)
     return [d for d in dirs if d.is_dir()]
 
 
@@ -123,9 +123,10 @@ def launch_command(info: ModuleInfo) -> tuple[list[str], dict]:
     """
     uv = shutil.which("uv")
     folder = info.folder
-    in_repo = folder is not None and REPO / MODULES_DIR in folder.parents
-    if uv and in_repo and (REPO / "pyproject.toml").exists():
-        return ([uv, "run", "--project", str(REPO), "--all-packages", "--extra", "gui",
+    repo = home.repo()
+    in_repo = folder is not None and repo / MODULES_DIR in folder.parents
+    if uv and in_repo and (repo / "pyproject.toml").exists():
+        return ([uv, "run", "--project", str(repo), "--all-packages", "--extra", "gui",
                  "python", "-m", info.module], {})
     env = {}
     if folder is not None and (folder / "src").is_dir():
@@ -150,7 +151,7 @@ def launch(info: ModuleInfo) -> subprocess.Popen:
     try:
         return subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT,
                                 stdin=subprocess.DEVNULL, env={**os.environ, **env},
-                                cwd=str(REPO) if REPO.exists() else None,
+                                cwd=str(home.repo()) if home.repo().exists() else None,
                                 creationflags=flags)
     finally:
         log.close()                     # the child has its own handle

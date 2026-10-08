@@ -66,7 +66,7 @@ class AnalysisMenu(QtWidgets.QMenu):
         if not inst:
             a = self.addAction("no analysis modules found")
             a.setEnabled(False)
-            a2 = self.addAction(f"(drop one into {AL.REPO / AL.MODULES_DIR})")
+            a2 = self.addAction(f"(drop one into {AL.home.repo() / AL.MODULES_DIR})")
             a2.setEnabled(False)
         self.setToolTipsVisible(True)
 

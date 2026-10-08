@@ -104,6 +104,12 @@ and a busy or crashed module never takes the viewer down. A module is a folder i
 **`AnalysisModules/`**: drop one in and the viewer lists it. Its packages are
 installed the first time it starts.
 
+The viewer started from AaltoFlow (Mission Control's Data viewer button, the
+catalogue) is installed inside scan-core, where no `AnalysisModules/` folder
+exists. It offers the modules and loading scripts of the AaltoView checkout
+that last ran on this PC (remembered in `%LOCALAPPDATA%\AaltoView\checkout.txt`);
+set `AALTOVIEW_HOME` to choose another checkout.
+
 - **VNA-FMR fit** ([AnalysisModules/vna-fmr-fit](AnalysisModules/vna-fmr-fit/README.md)): complex
   Lorentzian for VNA data. It gives the resonance position, the linewidth
   (HWHM and FWHM, with 1σ errors), the amplitude and the mixing phase. It fits
