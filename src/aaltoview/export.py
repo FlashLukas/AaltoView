@@ -466,6 +466,32 @@ def transpose_map(m: MapData) -> MapData:
                    held=dict(m.held), ref=ref)
 
 
+def pick_rows(y, count: int, lo: float | None = None, hi: float | None = None) -> np.ndarray:
+    """Indices of `count` lines spread evenly over the map (or over the part
+    with lo <= y <= hi): when a whole map is too many sweeps to fit."""
+    y = np.asarray(y, dtype=float)
+    idx = np.arange(y.size)
+    if lo is not None and hi is not None:
+        lo, hi = min(lo, hi), max(lo, hi)
+        idx = idx[(y >= lo) & (y <= hi)]
+    if idx.size == 0 or count <= 0:
+        return np.array([], dtype=int)
+    if count >= idx.size:
+        return idx
+    return idx[np.unique(np.round(np.linspace(0, idx.size - 1, int(count))).astype(int))]
+
+
+def map_rows(m: MapData, rows) -> MapData:
+    """The same map with only these lines (rows = indices into m.y)."""
+    rows = np.asarray(rows, dtype=int)
+    return MapData(x=np.asarray(m.x).copy(), y=np.asarray(m.y)[rows].copy(),
+                   values=np.asarray(m.values)[rows].copy(), label=m.label,
+                   x_name=m.x_name, x_unit=m.x_unit, y_name=m.y_name, y_unit=m.y_unit,
+                   z_name=m.z_name, z_unit=m.z_unit, selection=m.selection, source=m.source,
+                   z=None if m.z is None else np.asarray(m.z)[rows].copy(),
+                   held=dict(m.held), ref=None if m.ref is None else dict(m.ref))
+
+
 def map_to_curves(m: MapData) -> list[Curve]:
     """One curve per row (per value of y), along x -- how a module that takes
     curves (a fit of one sweep at a time) receives a map. Each curve is held at

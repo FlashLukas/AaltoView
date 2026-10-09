@@ -93,13 +93,14 @@ def test_the_lab_workflow_gives_the_exchange_stiffness(win, curves):
 
 
 def test_a_whole_map_arrives_as_one_sweep_per_field(win, tmp_path_factory):
-    """Map tab -> Analysis: the field x frequency map, X = rf_freq, as one
-    sweep per field, each held at its field -- the same curves 1D plots sends."""
+    """Map tab -> Analysis: the field x frequency map, X = field, Y = rf_freq
+    (the map's Y is the fit's x axis), as one frequency sweep per field, each
+    held at its field -- the same curves 1D plots sends."""
     out = tmp_path_factory.mktemp("demo_map")
     DEMO.main([str(out)])
     path = next(out.glob("*/*_yig_200nm_vna.nc"))
     ds = load(path).load()
-    m = E.make_map_data(ds, E.Selection("s21", x="rf_freq", y="field"), source=path)
+    m = E.make_map_data(ds, E.Selection("s21", x="field", y="rf_freq"), source=path)
     win.add_maps([m])
     assert len(win.entries) == 13
     c = win.entries[4].curve

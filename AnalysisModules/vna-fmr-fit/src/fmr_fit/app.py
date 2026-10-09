@@ -28,8 +28,8 @@ from PySide6 import QtCore, QtGui, QtWidgets
 
 from aaltoview.apps.theme import C
 from aaltoview.apps.viewer import TAB10, _float, _plain_axes
-from aaltoview.export import (Curve, MapData, axis_title, map_to_curves, save_figure,
-                              transpose_map)
+from aaltoview.export import (Curve, MapData, axis_title, map_rows, map_to_curves,
+                              pick_rows, save_figure, transpose_map)
 
 from . import model as M
 from .dispersion import unit_kind
@@ -103,6 +103,81 @@ def _pretty(name: str) -> str:
     return {"bg": "background", "bg_re": "background Re", "bg_im": "background Im",
             "slope": "slope", "slope_re": "slope Re", "slope_im": "slope Im",
             "delay": "electrical delay τ"}.get(name, name)
+
+
+#: more sweeps than this from one map: ask before taking them all (a map of
+#: 8192 frequencies sent with field on Y is 8192 field sweeps, ~35 min of Fit all)
+MANY_SWEEPS = 200
+
+
+class FewerSweeps(QtWidgets.QDialog):
+    """'This map gives 8192 sweeps -- take fewer?' A range of the map's X (the
+    values the sweeps are taken at) and how many, spread evenly over it."""
+
+    def __init__(self, parent, t: MapData):
+        super().__init__(parent)
+        self.t = t
+        n, npts = t.y.size, t.x.size
+        self.setWindowTitle("Many sweeps")
+        v = QtWidgets.QVBoxLayout(self)
+        v.addWidget(QtWidgets.QLabel(
+            f"This map gives {n} sweeps along {t.x_name} (one per {t.y_name}), "
+            f"{npts} points each.\nThat is a lot to fit: about {n * 0.25 / 60:.0f} min "
+            f"for Fit all. Take fewer?"))
+        g = QtWidgets.QGridLayout()
+        y = np.asarray(t.y, dtype=float)
+        unit = f" {t.y_unit}" if t.y_unit else ""
+        g.addWidget(QtWidgets.QLabel(f"{t.y_name} from"), 0, 0)
+        self.lo = QtWidgets.QLineEdit(f"{np.nanmin(y):g}")
+        self.hi = QtWidgets.QLineEdit(f"{np.nanmax(y):g}")
+        g.addWidget(self.lo, 0, 1)
+        g.addWidget(QtWidgets.QLabel("to"), 0, 2)
+        g.addWidget(self.hi, 0, 3)
+        g.addWidget(QtWidgets.QLabel(unit.strip()), 0, 4)
+        g.addWidget(QtWidgets.QLabel("number of sweeps"), 1, 0)
+        self.count = QtWidgets.QSpinBox()
+        self.count.setRange(1, n)
+        self.count.setValue(min(50, n))
+        g.addWidget(self.count, 1, 1)
+        v.addLayout(g)
+        self.info = QtWidgets.QLabel()
+        v.addWidget(self.info)
+        b = QtWidgets.QDialogButtonBox()
+        self.take = b.addButton("Take these", QtWidgets.QDialogButtonBox.AcceptRole)
+        self.all = b.addButton(f"Take all {n}", QtWidgets.QDialogButtonBox.AcceptRole)
+        b.addButton(QtWidgets.QDialogButtonBox.Cancel)
+        self.take.clicked.connect(lambda: self._done(False))
+        self.all.clicked.connect(lambda: self._done(True))
+        b.rejected.connect(self.reject)
+        v.addWidget(b)
+        self._all = False
+        for w in (self.lo, self.hi):
+            w.textChanged.connect(self._update)
+        self.count.valueChanged.connect(self._update)
+        self._update()
+
+    def _range(self):
+        return (_float(self.lo.text(), float(np.nanmin(self.t.y))),
+                _float(self.hi.text(), float(np.nanmax(self.t.y))))
+
+    def _update(self, *_):
+        r = pick_rows(self.t.y, self.count.value(), *self._range())
+        if r.size:
+            ys = np.asarray(self.t.y)[r]
+            self.info.setText(f"-> {r.size} sweeps, at {self.t.y_name} = {ys.min():g} ... "
+                              f"{ys.max():g} {self.t.y_unit}".rstrip())
+        else:
+            self.info.setText("-> nothing in that range")
+        self.take.setEnabled(r.size > 0)
+
+    def _done(self, everything: bool):
+        self._all = everything
+        self.accept()
+
+    def rows(self):
+        if self._all:
+            return np.arange(self.t.y.size)
+        return pick_rows(self.t.y, self.count.value(), *self._range())
 
 
 class FitWindow(QtWidgets.QWidget):
@@ -462,22 +537,34 @@ class FitWindow(QtWidgets.QWidget):
         self.say(msg)
 
     def add_maps(self, maps: list[MapData]):
-        """A whole map from the viewer's Map tab, cut into sweeps ALONG FREQUENCY
-        whichever axis the viewer showed it on (asked for 2026-10-09: "when I
-        have field as the x axis I want to be fitting in the frequency domain"):
-        one frequency sweep per field, each held at its field, ready for the
-        Dispersion tab. A map with no frequency axis is cut along its X."""
-        turned = []
-        for i, m in enumerate(maps):
-            if unit_kind(m.x_unit)[0] != "freq" and unit_kind(m.y_unit)[0] == "freq":
-                maps[i] = transpose_map(m)
-                turned.append(m.y_name)
-        curves = [c for m in maps for c in map_to_curves(m)]
+        """A whole map from the viewer's Map tab: the map's Y axis becomes the
+        fit's x axis (his rule, 2026-10-09) -- one sweep per X value, along Y.
+        X = rf_freq, Y = field: field sweeps, one per frequency; X = field,
+        Y = rf_freq: frequency sweeps, one per field. More than MANY_SWEEPS
+        sweeps: ask first, and offer fewer (a range of X, a number)."""
+        curves = []
+        for m in maps:
+            t = transpose_map(m)                 # rows of t = the map's X values
+            if t.y.size > MANY_SWEEPS:
+                rows = self.ask_fewer(t)
+                if rows is None:
+                    self.say(f"map ({m.label}) not taken: cancelled")
+                    continue
+                t = map_rows(t, rows)
+            curves += map_to_curves(t)
+        if not curves:
+            return
         self.add_curves(curves)
         m = maps[0]
-        how = f" (the map's Y axis: fitted in frequency)" if turned else ""
-        self.say(f"received a map ({m.label}): {len(curves)} sweeps along {m.x_name}{how}, "
-                 f"one per {m.y_name}")
+        self.say(f"received a map ({m.label}): {len(curves)} sweeps along {m.y_name} "
+                 f"(the map's Y), one per {m.x_name}")
+
+    def ask_fewer(self, t: MapData):
+        """Many sweeps: which to take (row indices of t), or None = cancel."""
+        dlg = FewerSweeps(self, t)
+        if dlg.exec() != QtWidgets.QDialog.Accepted:
+            return None
+        return dlg.rows()
 
     def targets(self) -> list[Entry]:
         """What Fit all works on: the selected curves when there are several,
