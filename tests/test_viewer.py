@@ -404,3 +404,21 @@ def test_a_one_point_line_survives_the_drawing_with_max(viewer):
         assert drawn_max() == pytest.approx(-20.0)                  # kept, at its height
     finally:
         VW.pg.ImageItem.render = saved
+
+
+def test_the_icon_is_handed_to_windows_again_after_the_window_shows():
+    """The taskbar sometimes kept a blank icon for a freshly started viewer
+    until it was made to look again (2026-10-09): the icon is set anew after
+    the window shows."""
+    import time
+    from aaltoview.apps.theme import refresh_taskbar_icon
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    w = QtWidgets.QWidget()
+    w.show()
+    key = w.windowIcon().cacheKey()
+    refresh_taskbar_icon(w, delays_ms=(10,))
+    t = time.time()
+    while time.time() - t < 0.5:
+        app.processEvents()
+    assert w.windowIcon().cacheKey() != key and not w.windowIcon().isNull()
+    w.close()

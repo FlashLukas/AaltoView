@@ -124,6 +124,28 @@ def apply_window_icon(app, app_id: str = APP_ID) -> None:
         pass
 
 
+def refresh_taskbar_icon(window, delays_ms=(1000, 5000)) -> None:
+    """Hand the icon to Windows again a moment after the window is shown.
+
+    Seen 2026-10-09: the taskbar sometimes gave a freshly started viewer the
+    BLANK icon although its window carried the right one (WM_GETICON said so),
+    and kept it until something made it look again -- another window with the
+    same app ID appearing fixed it without a restart. Setting the icon again
+    (a new QIcon, so Qt sends WM_SETICON; checked) is that nudge. Never fatal.
+    """
+    if not ICON_FILE.exists():
+        return
+
+    def again():
+        try:
+            window.setWindowIcon(QtGui.QIcon(str(ICON_FILE)))
+        except RuntimeError:              # the window is already gone
+            pass
+
+    for ms in delays_ms:
+        QtCore.QTimer.singleShot(ms, again)
+
+
 def apply(app: QtWidgets.QApplication):
     """Convenience: Fusion + palette + stylesheet for the ACTIVE theme.
 

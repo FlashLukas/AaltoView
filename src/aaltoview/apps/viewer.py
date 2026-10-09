@@ -55,7 +55,8 @@ from .. import export as E
 from .. import view as V
 from ..data import find_measurements, load, summarize
 from .analysis import AnalysisMenu
-from .theme import C, DEFAULT_THEME, apply, apply_window_icon, set_theme
+from .theme import (C, DEFAULT_THEME, apply, apply_window_icon, refresh_taskbar_icon,
+                    set_theme)
 from .widgets import DimRow
 NONE_TEXT = "— none —"
 PART_TEXT = {"|z|": "abs", "arg z": "arg", "Re z": "real", "Im z": "imag"}
@@ -1796,6 +1797,7 @@ def main(argv=None, try_handover: bool = True) -> int:
     # test or tools/render_docs.py never inherits the operator's choice
     win.viewer.set_loading_script(last_script())
     win.show()
+    refresh_taskbar_icon(win)       # the taskbar sometimes keeps a blank icon
     # the window files are handed to -- unless another viewer already is one
     # (a start without a file, or --new-window, while a viewer runs)
     if not SI.is_running():

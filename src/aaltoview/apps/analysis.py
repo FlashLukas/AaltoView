@@ -17,7 +17,8 @@ import time
 from PySide6 import QtCore, QtWidgets
 
 from .. import analysis_link as AL
-from .theme import DEFAULT_THEME, apply, apply_window_icon, set_theme
+from .theme import (DEFAULT_THEME, apply, apply_window_icon, refresh_taskbar_icon,
+                    set_theme)
 
 
 # ─────────────────────────────── the viewer's end ─────────────────────────────
@@ -177,6 +178,7 @@ def run_module(info: dict, window_class, argv=None) -> int:
     app.aboutToQuit.connect(lis.stop)
     win.setWindowTitle(lis.title)
     win.show()
+    refresh_taskbar_icon(win)
     try:
         return app.exec()
     finally:
