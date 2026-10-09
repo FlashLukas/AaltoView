@@ -444,6 +444,28 @@ def make_map_data(ds: xr.Dataset, sel: Selection, style: MapStyle | None = None,
                    held=held_values(ds, sel), ref=ref)
 
 
+#: a reference along one axis is along the other once the map is turned
+_REF_TURNED = {"row": "column", "column": "row", "median_rows": "median_columns",
+               "median_columns": "median_rows", "dd_y": "dd_x", "dd_x": "dd_y"}
+
+
+def transpose_map(m: MapData) -> MapData:
+    """The same map with X and Y swapped: rows become columns. A module that
+    cuts maps into sweeps uses it to sweep along the axis it fits in (a
+    VNA-FMR fit: frequency, whichever axis the viewer showed it on)."""
+    sel = Selection.from_dict(m.selection.to_dict())
+    sel.x, sel.y = m.y_name, m.x_name
+    ref = None
+    if m.ref is not None:
+        ref = {**m.ref, "mode": _REF_TURNED.get(m.ref.get("mode"), m.ref.get("mode"))}
+    return MapData(x=np.asarray(m.y).copy(), y=np.asarray(m.x).copy(),
+                   values=np.asarray(m.values).T.copy(), label=m.label,
+                   x_name=m.y_name, x_unit=m.y_unit, y_name=m.x_name, y_unit=m.x_unit,
+                   z_name=m.z_name, z_unit=m.z_unit, selection=sel, source=m.source,
+                   z=None if m.z is None else np.asarray(m.z).T.copy(),
+                   held=dict(m.held), ref=ref)
+
+
 def map_to_curves(m: MapData) -> list[Curve]:
     """One curve per row (per value of y), along x -- how a module that takes
     curves (a fit of one sweep at a time) receives a map. Each curve is held at

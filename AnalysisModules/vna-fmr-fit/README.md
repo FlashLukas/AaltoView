@@ -36,6 +36,9 @@ phase. On *auto*, both are tried and the better one is kept.
 
 1. In AaltoView, 1D plots: add the sweeps, then **Analysis → Start VNA-FMR fit
    and send** (or **Send to VNA-FMR fit** if it is already open).
+   Or send a whole map from the **Map** tab: it is cut into frequency sweeps,
+   one per field, whichever axis the frequency is on in the map (with field
+   on X too, the fit is in frequency).
 2. Each curve arrives with guessed start values (dashed line).
 3. **Fit** fits the curve on screen. **Fit all** fits every curve with the same
    model, one at a time: each row fills in as it is fitted, and the button reads

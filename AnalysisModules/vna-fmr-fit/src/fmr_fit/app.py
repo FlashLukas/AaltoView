@@ -28,7 +28,8 @@ from PySide6 import QtCore, QtGui, QtWidgets
 
 from aaltoview.apps.theme import C
 from aaltoview.apps.viewer import TAB10, _float, _plain_axes
-from aaltoview.export import Curve, MapData, axis_title, map_to_curves, save_figure
+from aaltoview.export import (Curve, MapData, axis_title, map_to_curves, save_figure,
+                              transpose_map)
 
 from . import model as M
 from .dispersion import unit_kind
@@ -461,14 +462,21 @@ class FitWindow(QtWidgets.QWidget):
         self.say(msg)
 
     def add_maps(self, maps: list[MapData]):
-        """A whole map from the viewer's Map tab: one sweep per row (per value of
-        the map's Y), along its X, each held at its Y value -- so a field x
-        frequency map with X = frequency arrives as one frequency sweep per field,
-        ready for the Dispersion tab. Choose X in the viewer before sending."""
+        """A whole map from the viewer's Map tab, cut into sweeps ALONG FREQUENCY
+        whichever axis the viewer showed it on (asked for 2026-10-09: "when I
+        have field as the x axis I want to be fitting in the frequency domain"):
+        one frequency sweep per field, each held at its field, ready for the
+        Dispersion tab. A map with no frequency axis is cut along its X."""
+        turned = []
+        for i, m in enumerate(maps):
+            if unit_kind(m.x_unit)[0] != "freq" and unit_kind(m.y_unit)[0] == "freq":
+                maps[i] = transpose_map(m)
+                turned.append(m.y_name)
         curves = [c for m in maps for c in map_to_curves(m)]
         self.add_curves(curves)
         m = maps[0]
-        self.say(f"received a map ({m.label}): {len(curves)} sweeps along {m.x_name}, "
+        how = f" (the map's Y axis: fitted in frequency)" if turned else ""
+        self.say(f"received a map ({m.label}): {len(curves)} sweeps along {m.x_name}{how}, "
                  f"one per {m.y_name}")
 
     def targets(self) -> list[Entry]:
