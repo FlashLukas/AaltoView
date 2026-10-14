@@ -134,13 +134,16 @@ How a map arrives depends on the module:
 - **`accepts = ["curves", "maps"]` and an `add_maps(list[MapData])` method:**
   it arrives as a map (the Spin-wave FFT module).
 - **`accepts` has "maps" but there is no `add_maps` method:** `run_module()`
-  hands it to `add_curves` as one curve per row, each held at its y value
-  (`export.map_to_curves`).
+  hands it to `add_curves` as **one curve per X value, running along Y**, each
+  labelled and held at its X value (`export.map_to_curves`; "the x axis is the
+  parameter, the y axis is plotted"). X = field (121 values), Y = frequency
+  (1601 points): 121 frequency sweeps, "field = -50 mT", ...
 - **The module takes only curves:** the viewer sends those same curves, and its
-  menu says "(as curves, one per row)".
+  menu says "(as curves, one per X value)".
 
-The VNA-FMR fit module accepts maps this way. A field × frequency map with
-X = `rf_freq` becomes one frequency sweep per field, ready for its Dispersion
+The VNA-FMR fit module has its own `add_maps`, with the same orientation (and
+it asks before taking very many sweeps). A map with X = `field` and Y =
+`rf_freq` becomes one frequency sweep per field, ready for its Dispersion
 tab.
 
 ## Writing a new module

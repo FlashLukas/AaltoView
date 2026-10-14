@@ -32,7 +32,7 @@ class AnalysisMenu(QtWidgets.QMenu):
     say(text, error)              the panel's status line
 
     Maps go to every module: as maps to one whose module.toml accepts them,
-    as one curve per row to one that takes only curves.
+    as one curve per X value (along Y) to one that takes only curves.
     """
 
     #: how long a started module gets to announce itself. Generous: the FIRST
@@ -60,7 +60,7 @@ class AnalysisMenu(QtWidgets.QMenu):
         if run:
             self.addSeparator()
         for m in inst:
-            how = "" if self.kind == "curves" or "maps" in m.accepts else " (as curves, one per row)"
+            how = "" if self.kind == "curves" or "maps" in m.accepts else " (as curves, one per X value)"
             a = self.addAction(f"Start {m.name} and send{how}")
             a.setToolTip(m.description)
             a.triggered.connect(lambda _=False, m=m: self.start_and_send(m))
@@ -106,7 +106,7 @@ class AnalysisMenu(QtWidgets.QMenu):
             self.say(f"Analysis: {r.title} did not take the {what}s: {exc}", error=True)
             return
         n = len(curves)
-        how = "" if self.kind == "curves" or "maps" in r.accepts else " (as one curve per row)"
+        how = "" if self.kind == "curves" or "maps" in r.accepts else " (as one curve per X value)"
         self.say(f"sent {n} {what}{'s' if n != 1 else ''} to {r.title}{how}")
 
     def start_and_send(self, m: AL.ModuleInfo):
@@ -161,7 +161,7 @@ class Inbox(QtCore.QObject):
 
 def run_module(info: dict, window_class, argv=None) -> int:
     """Start an analysis module: `window_class()` must have add_curves(curves);
-    with add_maps(maps) too, whole maps arrive as maps (else one curve per row).
+    with add_maps(maps) too, whole maps arrive as maps (else one curve per X value).
 
         # fmr_fit/__main__.py
         return run_module(INFO, FitWindow, argv)

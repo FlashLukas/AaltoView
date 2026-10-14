@@ -189,19 +189,68 @@ def test_a_map_keeps_its_complex_values_and_its_reference():
     assert (back.x_name, back.y_name, back.y_unit, back.ref) == ("field", "rf_freq", "GHz", m.ref)
 
 
-def test_a_map_becomes_one_curve_per_row_held_at_its_y():
+def test_a_map_becomes_one_curve_per_x_value_along_y():
+    """Lukas (2026-10-14): "the x axis is the parameter, the y axis is plotted"."""
     ds = _complex_ds()
-    m = E.make_map_data(ds, E.Selection("s21", x="field", y="rf_freq", part="real"),
+    m = E.make_map_data(ds, E.Selection("s21", x="rf_freq", y="field", part="real"),
                         source="x.nc")
     curves = E.map_to_curves(m)
     assert [c.held for c in curves] == [{"rf_freq": (6.0, "GHz")}, {"rf_freq": (8.0, "GHz")}]
     assert curves[1].label == "rf_freq = 8 GHz"
+    assert curves[1].x_name == "field" and curves[1].x_unit == "mT"
+    np.testing.assert_array_equal(curves[1].x, m.y)
     # the same numbers as a curve made from the file at that frequency
     c = E.make_curve(ds, E.Selection("s21", x="field", slices={"rf_freq": Slice("at", 1)},
                                      part="real"), "x.nc")
     np.testing.assert_array_equal(curves[1].y[np.isfinite(c.y)], c.y[np.isfinite(c.y)])
     np.testing.assert_array_equal(curves[1].z[np.isfinite(c.z)], c.z[np.isfinite(c.z)])
-    assert curves[1].selection.slices["rf_freq"].i0 == 1 and curves[1].selection.y is None
+    sel = curves[1].selection
+    assert sel.slices["rf_freq"].i0 == 1 and sel.x == "field" and sel.y is None
+    # picked columns keep their index IN THE FILE
+    (only,) = E.map_to_curves(m, columns=[1])
+    assert only.selection.slices["rf_freq"].i0 == 1 and only.label == "rf_freq = 8 GHz"
+
+
+def test_a_referenced_map_cut_per_x_value_is_the_files_referenced_line():
+    """A cut keeps the map's reference (Selection.ref): regenerated from the
+    file, the curve is the same line of the referenced map."""
+    ds = _complex_ds()
+    m = E.make_map_data(ds, E.Selection("s21", x="rf_freq", y="field"),
+                        E.MapStyle(ref="column", ref_i=0), "x.nc")
+    c = E.map_to_curves(m)[1]
+    again = E.make_curve(ds, c.selection, "x.nc")
+    np.testing.assert_allclose(again.z, c.z, equal_nan=True)
+
+
+def test_a_vna_map_121_fields_x_1601_freqs_gives_121_frequency_sweeps():
+    """His case: show vna.u |z|, X = clMag.field (121), Y = vna.freq (1601) ->
+    121 sweeps along frequency, labelled by field. Sending 1601 field sweeps
+    instead made a send take ~30 s; building these must be quick."""
+    import time
+    field = np.linspace(-50.0, 70.0, 121)
+    freq = np.linspace(1.0, 17.0, 1601)
+    rng = np.random.default_rng(0)
+    u = rng.normal(size=(121, 1601)) + 1j * rng.normal(size=(121, 1601))
+    pair = {"complex_pair": "vna.u"}
+    ds = xr.Dataset(
+        {"vna.u_real": (("clMag.field", "vna.freq"), u.real, {**pair, "complex_part": "real"}),
+         "vna.u_imag": (("clMag.field", "vna.freq"), u.imag, {**pair, "complex_part": "imag"})},
+        coords={"clMag.field": ("clMag.field", field, {"units": "mT"}),
+                "vna.freq": ("vna.freq", freq, {"units": "GHz"})},
+        attrs={"dims": "clMag.field,vna.freq"})
+    m = E.make_map_data(ds, E.Selection("vna.u", x="clMag.field", y="vna.freq", part="abs"))
+    assert m.values.shape == (1601, 121)
+    t = time.perf_counter()
+    curves = E.map_to_curves(m)
+    took = time.perf_counter() - t
+    assert len(curves) == 121
+    assert curves[0].label == "clMag.field = -50 mT" and curves[-1].label == "clMag.field = 70 mT"
+    assert all(c.x_name == "vna.freq" and c.x.size == 1601 for c in curves)
+    np.testing.assert_array_equal(curves[60].x, freq)
+    np.testing.assert_allclose(curves[60].z, u[60])                      # complex kept
+    np.testing.assert_allclose(curves[60].y, np.abs(u[60]))
+    assert curves[60].held["clMag.field"] == (pytest.approx(10.0), "mT")
+    assert took < 0.5, f"building 121 curves took {took:.2f} s"
 
 
 def test_maps_go_as_maps_or_as_curves_as_the_module_asks():
@@ -217,12 +266,12 @@ def test_maps_go_as_maps_or_as_curves_as_the_module_asks():
         AL.send_maps(lis.port, [m], run["test_mod"].accepts)
         assert len(got_maps) == 1 and got_maps[0].z.shape == (2, 11) and not got_curves
         AL.send_maps(plain.port, [m], run["curves_only"].accepts)
-        assert len(got_curves) == 2                     # one per row
-        # a module that says "maps" but has no handler: rows through on_curves
+        assert len(got_curves) == 11                    # one per X value (field)
+        # a module that says "maps" but has no handler: curves through on_curves
         got_curves.clear()
         lis.on_maps = None
         AL.send_maps(lis.port, [m])
-        assert len(got_curves) == 2
+        assert len(got_curves) == 11 and got_curves[0].x_name == "rf_freq"
     finally:
         lis.stop()
         plain.stop()

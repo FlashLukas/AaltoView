@@ -492,25 +492,41 @@ def map_rows(m: MapData, rows) -> MapData:
                    held=dict(m.held), ref=None if m.ref is None else dict(m.ref))
 
 
-def map_to_curves(m: MapData) -> list[Curve]:
-    """One curve per row (per value of y), along x -- how a module that takes
-    curves (a fit of one sweep at a time) receives a map. Each curve is held at
-    its y value, so e.g. a field x frequency map becomes one frequency sweep
-    per field, ready for a dispersion."""
+def map_to_curves(m: MapData, columns=None) -> list[Curve]:
+    """One curve per X value (per COLUMN of the map), running along Y -- how a
+    module that takes curves (a fit of one sweep at a time) receives a map.
+    Lukas's rule (2026-10-14): "the x axis is the parameter and the y axis is
+    plotted". So a map with X = clMag.field (121 values) and Y = vna.freq (1601
+    points) becomes 121 frequency sweeps, each labelled and held at its field
+    ("clMag.field = -50 mT") -- ready for a dispersion. (Until 2026-10-14 it was
+    one curve per ROW: 1601 field sweeps, and building/listing them was most
+    of the ~30 s a send took.)
+
+    columns: indices into m.x to make curves for (default: all). Pass them
+    rather than cutting the map down first, so each curve's Selection still
+    holds X at its index IN THE FILE (the notebook regenerates from it).
+    """
+    x = np.asarray(m.x, dtype=float)
+    yax = np.asarray(m.y, dtype=float)
+    # one transposed copy: each column becomes a contiguous row, copied once
+    vals = np.ascontiguousarray(np.asarray(m.values, dtype=float).T)
+    zt = None if m.z is None else np.ascontiguousarray(np.asarray(m.z, dtype=complex).T)
+    base = m.selection.to_dict()
+    cols = range(x.size) if columns is None else [int(i) for i in columns]
     out = []
-    for i, yv in enumerate(np.asarray(m.y, dtype=float)):
-        sel = Selection.from_dict(m.selection.to_dict())
-        sel.slices[m.y_name] = Slice("at", i)
-        if m.ref:
+    for i in cols:
+        xv = float(x[i])
+        sel = Selection.from_dict(base)
+        sel.slices[m.x_name] = Slice("at", i)
+        if m.ref:            # a cut of the referenced map (export.ref_line)
             sel.ref = {"x": m.x_name, "y": m.y_name, **m.ref}
-        sel.y = None
-        yt = f"{m.y_name} = {yv:g} {m.y_unit}".strip()
-        out.append(Curve(x=np.asarray(m.x, dtype=float).copy(),
-                         y=np.asarray(m.values[i], dtype=float).copy(),
-                         label=yt, x_name=m.x_name, x_unit=m.x_unit,
+        sel.x, sel.y = m.y_name, None        # the curve runs along the map's Y
+        label = f"{m.x_name} = {xv:g} {m.x_unit}".strip()
+        out.append(Curve(x=yax.copy(), y=vals[i].copy(), label=label,
+                         x_name=m.y_name, x_unit=m.y_unit,
                          y_name=m.z_name, y_unit=m.z_unit, selection=sel, source=m.source,
-                         z=None if m.z is None else np.asarray(m.z[i], dtype=complex).copy(),
-                         held={**m.held, m.y_name: (float(yv), m.y_unit)}))
+                         z=None if zt is None else zt[i].copy(),
+                         held={**m.held, m.x_name: (xv, m.x_unit)}))
     return out
 
 

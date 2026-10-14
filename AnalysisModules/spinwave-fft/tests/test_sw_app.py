@@ -90,7 +90,9 @@ def test_map_in_fft_peaks_fit_out(win, stripe_map, tmp_path):
 
 def test_curves_are_stacked_into_one_input(win, stripe_map):
     ds, path, m = stripe_map
-    curves = E.map_to_curves(m)[:5]
+    # curves along pos_x, one per frequency: the map turned (X = rf_freq),
+    # since a map goes out as one curve per X value, running along Y
+    curves = E.map_to_curves(E.transpose_map(m))[:5]
     win.add_curves(curves)
     assert len(win.inputs) == 1 and win.inputs[0].rows.shape == (5, 201)
     assert win.inputs[0].y_name == "rf_freq"

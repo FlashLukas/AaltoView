@@ -78,6 +78,9 @@ def test_many_sweeps_ask_first_and_take_fewer(win):
     # the values are the map's: the column at that frequency
     k = int(np.argmin(np.abs(FREQ - fs[0])))
     np.testing.assert_allclose(win.entries[0].curve.z, m.z[:, k])
+    # and the curve remembers WHICH frequency of the file (not its place among
+    # the 10 taken): the notebook regenerates the sweep from that index
+    assert win.entries[0].curve.selection.slices["rf_freq"].i0 == k
 
 
 def test_cancel_takes_nothing(win):

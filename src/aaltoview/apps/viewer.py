@@ -553,8 +553,8 @@ class ExportBar(QtWidgets.QWidget):
         elif hasattr(panel, "analysis_maps"):
             b = QtWidgets.QPushButton("Analysis")
             b.setToolTip("Send the whole map to an analysis module: as a map to one that\n"
-                         "takes maps (FFT, ...), as one curve per row to one that takes\n"
-                         "curves. The reference goes with it; the colour styling does not.")
+                         "takes maps (FFT, ...), as one curve per X value (running along Y)\n"
+                         "to one that takes curves. The reference goes with it; the colour styling does not.")
             self.analysis_menu = AnalysisMenu(b, panel.analysis_maps, panel.say, kind="maps")
             b.setMenu(self.analysis_menu)
             h.addWidget(b)

@@ -134,7 +134,8 @@ viewer's own Python, so its packages must already be there.
   resonances with one magnetic model: γ, M_eff, in-plane uniaxial, 4- and
   6-fold anisotropy, PSSW exchange (A) and damping (α, ΔH0). It handles field
   sweeps at any angle, frequency sweeps, and angle series. A map sent to it
-  arrives as one sweep per row.
+  arrives as one sweep per X value, along Y (X = field, Y = frequency:
+  one frequency sweep per field).
 - **Spin-wave FFT** ([AnalysisModules/spinwave-fft](AnalysisModules/spinwave-fft/README.md)):
   - the spatial FFT of every line of a map (e.g. lock-in vs pos_x × rf_freq),
     coherent on complex data, so waves travelling towards +x and −x are

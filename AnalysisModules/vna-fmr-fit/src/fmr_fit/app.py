@@ -28,7 +28,7 @@ from PySide6 import QtCore, QtGui, QtWidgets
 
 from aaltoview.apps.theme import C
 from aaltoview.apps.viewer import TAB10, _float, _plain_axes
-from aaltoview.export import (Curve, MapData, axis_title, map_rows, map_to_curves,
+from aaltoview.export import (Curve, MapData, axis_title, map_to_curves,
                               pick_rows, save_figure, transpose_map)
 
 from . import model as M
@@ -537,21 +537,24 @@ class FitWindow(QtWidgets.QWidget):
         self.say(msg)
 
     def add_maps(self, maps: list[MapData]):
-        """A whole map from the viewer's Map tab: the map's Y axis becomes the
-        fit's x axis (his rule, 2026-10-09) -- one sweep per X value, along Y.
-        X = rf_freq, Y = field: field sweeps, one per frequency; X = field,
-        Y = rf_freq: frequency sweeps, one per field. More than MANY_SWEEPS
-        sweeps: ask first, and offer fewer (a range of X, a number)."""
+        """A whole map from the viewer's Map tab: one sweep per X value, along
+        Y -- the map's Y axis is the fit's x axis (his rule, 2026-10-09; "the
+        x axis is the parameter, the y axis is plotted", 2026-10-14), exactly
+        what export.map_to_curves makes. X = field, Y = rf_freq: frequency
+        sweeps, one per field; X = rf_freq, Y = field: field sweeps, one per
+        frequency. More than MANY_SWEEPS sweeps: ask first, and offer fewer
+        (a range of X, a number)."""
         curves = []
         for m in maps:
-            t = transpose_map(m)                 # rows of t = the map's X values
-            if t.y.size > MANY_SWEEPS:
-                rows = self.ask_fewer(t)
-                if rows is None:
+            cols = None
+            if np.asarray(m.x).size > MANY_SWEEPS:
+                # the dialog lists the sweeps as rows of the turned map: row k
+                # of transpose_map(m) is X value k, so its rows are our columns
+                cols = self.ask_fewer(transpose_map(m))
+                if cols is None:
                     self.say(f"map ({m.label}) not taken: cancelled")
                     continue
-                t = map_rows(t, rows)
-            curves += map_to_curves(t)
+            curves += map_to_curves(m, cols)
         if not curves:
             return
         self.add_curves(curves)

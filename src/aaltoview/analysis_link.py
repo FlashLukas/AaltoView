@@ -32,7 +32,7 @@ held coordinates -- the frozen Curve of export.py, nothing lost on the way.
 A map travels the same way (map_to_dict): both axes, the shown values, the
 complex map, the reference that was applied. A module that says `accepts =
 ["curves", "maps"]` but has no map handler of its own gets it as one curve per
-row (export.map_to_curves); a module that takes only curves is sent those.
+X value, running along Y (export.map_to_curves); a module that takes only curves is sent those.
 
 No Qt here: tests drive both ends in one process.
 """
@@ -287,7 +287,7 @@ def send_curves(port: int, curves: list[Curve], timeout_ms: int = 5000) -> dict:
 
 def send_maps(port: int, maps: list[MapData], accepts=("curves", "maps"),
               timeout_ms: int = 30000) -> dict:
-    """Maps to a module -- as maps if it takes them, else one curve per row.
+    """Maps to a module -- as maps if it takes them, else one curve per X value.
     A long timeout: a VNA map is 16 001 x 13 complex numbers of JSON."""
     if "maps" in accepts:
         reply = request(port, {"cmd": "add_maps", "protocol": PROTOCOL,
@@ -371,7 +371,7 @@ class Listener:
     `on_curves` is called ON THE LISTENER THREAD with a list of Curve; a Qt
     module turns it into a signal (apps/analysis.py does). The reply goes out at
     once, so the viewer never waits for a fit. `on_maps` likewise with a list of
-    MapData; without it, maps arrive through on_curves, one curve per row.
+    MapData; without it, maps arrive through on_curves, one curve per X value (along Y).
     """
 
     def __init__(self, info: dict | ModuleInfo, on_curves, on_shutdown=None, on_maps=None):
