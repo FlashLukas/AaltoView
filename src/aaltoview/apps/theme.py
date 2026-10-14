@@ -92,6 +92,18 @@ QCheckBox {{ color:{c['text']}; }}
 QProgressBar {{ background:{c['bg']}; border:1px solid {c['border']}; border-radius:6px;
     text-align:center; color:{c['text']}; }}
 QProgressBar::chunk {{ background:{c['accent']}; border-radius:5px; }}
+/* checkboxes drawn by us: Qt's default box is nearly invisible on the dark panels (Lukas, 2026-10-14) */
+QCheckBox::indicator {{
+    width: 16px; height: 16px;
+    border: 2px solid {c['muted']}; border-radius: 4px;
+    background: {c['panel_hi']};
+}}
+QCheckBox::indicator:hover {{ border: 2px solid {c['accent_hi']}; }}
+QCheckBox::indicator:checked {{ background: {c['accent']}; border: 2px solid {c['accent']}; }}
+QCheckBox::indicator:checked:hover {{ background: {c['accent_hi']}; border: 2px solid {c['accent_hi']}; }}
+QCheckBox::indicator:disabled {{ border: 2px solid {c['border']}; background: {c['panel']}; }}
+/* a greyed-out box must still say whether it is ticked */
+QCheckBox::indicator:checked:disabled {{ border: 2px solid {c['border']}; background: {c['muted']}; }}
 """
 
 
