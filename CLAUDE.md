@@ -12,6 +12,12 @@ NanoSpin group, Aalto University. Read `README.md` first.
   engine**: change both together.
 - `src/aaltoview/view.py` -- the cube reduction (hold / average per dimension,
   complex reduced BEFORE |z| or arg). No Qt; tested headless.
+- `src/aaltoview/segments.py` -- axes that go UP AND DOWN (hysteresis loops):
+  reads `<dim>_segment` / `segments_json` (AaltoFlow DEVELOPER_NOTES 4l), splits
+  an older typed loop at its reversals (a copy of scan-core's rule, pinned by
+  tests/test_segments.py). The rule everywhere: one line per run, a map shows
+  one run (or all by point #), a held value names its run, an average says if
+  it mixes up and down; `Selection.runs` carries the choice into every export.
 - `src/aaltoview/export.py` -- figures, `.dat`/`.csv`, notebooks (the notebook
   carries its OWN reduction code; a test executes it and compares with view.py).
 - `src/aaltoview/origin.py` -- Origin push, run in a child process.

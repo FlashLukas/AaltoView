@@ -375,6 +375,33 @@ def pose_stripe_map(v):
     v.tabs.setCurrentWidget(m)
 
 
+def pose_loop(v):
+    """A Kerr hysteresis loop (field 0 -> 100 -> -100 -> 100 mT, a `segments`
+    axis): one line per run, the down run drawn from the up run's last point."""
+    select_file(v, "091500_kerr_loop")
+    lines = v.lines
+    lines.controls.x_combo.setCurrentText("field")
+    lines.add_current()
+    lines.show_preview.setChecked(False)
+    lines.redraw()
+    v.tabs.setCurrentWidget(lines)
+
+
+def pose_loop_map(v):
+    """FMR through the loop against a LOG-spaced frequency: the map shows ONE
+    run (here the way down -- the line bends where the film switches), each
+    frequency cell drawn at its true width."""
+    select_file(v, "103000_fmr_loop_logfreq")
+    m = v.map
+    m.controls.x_combo.setCurrentText("field")
+    m.controls.y_combo.setCurrentText("rf_freq")
+    m.controls.set_run_choice("field", 1)
+    m.norm_combo.setCurrentIndex(2)                             # each column
+    m.refresh()
+    m._place_cursor(25, 40)                                     # 25 mT on the way down
+    v.tabs.setCurrentWidget(m)
+
+
 def main() -> int:
     global DATA
     # A NEUTRAL folder: its path is on screen, and a published picture must not
@@ -394,6 +421,9 @@ def main() -> int:
     shot(app, "map-rows-light", "light", pose_map_rows)
     shot(app, "map-reference", "dark", pose_map_reference)
     shot(app, "map-reference-light", "light", pose_map_reference)
+    shot(app, "hysteresis-loop", "dark", pose_loop)
+    shot(app, "hysteresis-loop-light", "light", pose_loop)
+    shot(app, "hysteresis-map", "dark", pose_loop_map)
     shot_fit(app, "fmr-fit", "dark")
     shot_fit(app, "fmr-fit-light", "light")
     shot_dispersion(app, "fmr-dispersion", "dark")

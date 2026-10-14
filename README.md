@@ -74,7 +74,37 @@ a complex signal are taken coherently.*
 | ![normalised, stacked field sweeps](docs/curves-normalised-light.png) | ![map with every line normalised](docs/map-rows-light.png) |
 | Field sweeps at 6–12 GHz, each normalised to its peak and stacked. | The same kind of map with every frequency line scaled to its own peak, so the resonance can be followed where the signal is weak. Light theme. |
 | ![VNA map divided by its reference](docs/map-reference.png) | ![the same, light theme](docs/map-reference-light.png) |
-| |S21| of 200 nm YIG, the field set and the frequency swept, every line ÷ the 800 mT line: the cables, amplifier and delay cancel, and the uniform mode and the weaker PSSW are left. | The same, light theme. |
+| |S21| of 200 nm YIG, the field set and the frequency swept, every line ÷ the 800 mT line: the cables, amplifier and delay cancel, and the uniform mode and the weaker PSSW are left. The field steps are uneven (25 … 300 mT, then 800 mT), so every cell reaches halfway to its neighbours, as in a saved figure. | The same, light theme. |
+
+### Up and down: hysteresis loops
+
+An axis swept up AND down (AaltoFlow's `segments` axis, e.g. a field
+0 → 100 → −100 → 100 mT) visits the same values more than once. The file says
+which **run** every point is on (`<dim>_segment`, `<dim>_direction`; see
+[The files it reads](#the-files-it-reads)), and the viewer keeps the runs apart
+everywhere instead of folding the loop onto itself:
+
+- **1D plots**: one line per run, each its own colour, named "up" / "down" (or
+  "seg 2 down" for more than two); a run that starts where the last one stopped
+  is drawn from that point, so the loop is closed as measured. A **runs**
+  chooser shows every run, one run alone, or every point against its point
+  number.
+- **Map**: ONE run at a time (two values cannot share a cell), each drawn
+  ascending — or all points by point number. The cursor and the cuts name the
+  run and hold the file's own point.
+- A **held** loop dimension names its run on the slider ("50 mT · seg 2 down");
+  **mean of run** averages one run; an average across runs is marked
+  "up and down mixed", never silently.
+- **Exports**: `.dat` / `.csv` get `<x>_segment` and `<x>_direction` columns,
+  Origin gets one X/Y column pair per run, the notebook recomputes the same
+  split, and an analysis module receives one curve per run, labelled.
+- An older file of a typed loop (no `<dim>_segment`) is split where its values
+  turn back — the same rule the scan engine uses.
+
+| | |
+|---|---|
+| ![a Kerr hysteresis loop, one colour per run](docs/hysteresis-loop.png) | ![FMR on the way down, log-spaced frequency](docs/hysteresis-map.png) |
+| A Kerr loop, field 0 → 100 → −100 → 100 mT: the virgin run, the way down and the way up, each its own line. | FMR through the same loop on the way DOWN (one run of three), frequency log-spaced 1–20 GHz: the resonance follows the field along the magnetisation until the film switches at −30 mT. Every frequency cell is drawn at its true width. |
 
 ## Loading scripts
 
@@ -201,7 +231,7 @@ new viewer). Use `--new-window` to force a second one. A start without a file
 ## Try it without lab data
 
 ```bash
-uv run python tools/make_demo_data.py demo_data     # ten simulated measurements
+uv run python tools/make_demo_data.py demo_data     # thirteen simulated measurements
 uv run aaltoview --folder demo_data
 ```
 
@@ -215,7 +245,9 @@ analysis modules:
 - VNA sweeps with a cable background;
 - 200 nm YIG with four standing spin waves, both as field sweeps and as VNA
   sweeps;
-- a spin-wave line scan along a permalloy stripe.
+- a spin-wave line scan along a permalloy stripe;
+- a Kerr hysteresis loop, the same loop against a log-spaced frequency (FMR),
+  and an older-style file of a typed loop without the segment coordinates.
 
 `tools/render_docs.py` regenerates them and every screenshot above.
 
@@ -255,7 +287,15 @@ attribute, and these conventions from the AaltoFlow scan engine:
 - dataset attributes `name`, `comment`, `dims` (outer → inner), `n_points`,
   `seconds`, `recipe_json`;
 - autosaves are named `<YYYY-MM-DD>/<HHMMSS>_<name>.nc`, which is where the
-  "measured" time in the file list comes from.
+  "measured" time in the file list comes from;
+- an axis that goes up AND down keeps its values as visited (not unique, not
+  monotonic) plus `<dim>_segment` (int32, the run, 0 = first) and
+  `<dim>_direction` (int8, +1 / −1) along it, and the attributes
+  `segments_json` / `segment_source` / `n_segments` on `<dim>`. Run k is
+  `ds.isel(<dim>=np.flatnonzero(ds["<dim>_segment"] == k))` — use `isel`, never
+  `sel`, on such a dimension. `aaltoview.segments.segments_of(ds, dim)` reads
+  them (and splits an older file at its reversals). The contract is
+  AaltoFlow's `docs/DEVELOPER_NOTES.md` section 4l.
 
 ## Not yet
 
