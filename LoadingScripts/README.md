@@ -6,7 +6,10 @@ choose to every file you open. Because it happens at loading, the map, the 1D
 plots, every export, the notebook and the analysis modules all see the
 corrected data.
 
-Drop a `.py` file into this folder and it is listed (press the list's ↻).
+The scripts in this folder ship with AaltoView (inside the installed
+package too). Your own go into **`%APPDATA%\AaltoView\LoadingScripts`** (the
+"load with" tooltip names it); drop a `.py` file there and it is listed (press
+the list's ↻). A script of the same file name as one found earlier is skipped.
 **Reload** reads the open file again through the chosen script, e.g. after you
 edit the script. Files whose name starts with `_` are not listed, so they can hold
 helpers that scripts share. More folders can be added with the

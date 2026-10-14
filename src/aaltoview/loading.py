@@ -6,9 +6,12 @@ laser's aliasing, a detector with a known offset, an old file with its axes in
 the wrong order. Doing it ONCE, at loading, means the map, the 1D plots, every
 export, the notebook and the analysis modules all see the corrected data.
 
-A loading script is a .py file in LoadingScripts/ (next to AnalysisModules/;
-more folders through AALTOVIEW_LOADING_SCRIPTS, os.pathsep-separated). Drop
-one in, and the viewer's "load with" list offers it. The whole contract:
+A loading script is a .py file in a LoadingScripts/ folder: the checkout's,
+the one bundled in the package, or the user's own (%APPDATA%/AaltoView/
+LoadingScripts) -- home.search_dirs() has the order; more folders through
+AALTOVIEW_LOADING_SCRIPTS (os.pathsep-separated), searched first. Drop one in,
+and the viewer's "load with" list offers it. The same file name twice: the
+first found wins, the other is logged and left out. The whole contract:
 
     \"\"\"One line: what it does (the list's tooltip).\"\"\"
     NAME = "TR-MOKE unfold (80 MHz laser)"       # optional; else the file name
@@ -27,6 +30,7 @@ No Qt here.
 from __future__ import annotations
 
 import importlib.util
+import logging
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -38,7 +42,9 @@ from . import home
 from .data import complex_names
 
 SCRIPTS_ENV = "AALTOVIEW_LOADING_SCRIPTS"
-SCRIPTS_DIR = "LoadingScripts"
+SCRIPTS_DIR = home.SCRIPTS
+
+log = logging.getLogger(__name__)
 #: the attribute a loaded dataset carries: which script made it
 ATTR = "aaltoview_loading_script"
 
@@ -52,8 +58,13 @@ class Script:
 
 def script_dirs() -> list[Path]:
     dirs = [Path(p) for p in os.environ.get(SCRIPTS_ENV, "").split(os.pathsep) if p]
-    dirs.append(home.repo() / SCRIPTS_DIR)   # the checkout's, also from scan-core
+    dirs += home.search_dirs(SCRIPTS_DIR)
     return [d for d in dirs if d.is_dir()]
+
+
+def user_dir_text() -> str:
+    """The user's own scripts folder, for tooltips (not created here)."""
+    return str(home.user_dir(SCRIPTS_DIR))
 
 
 def _read(path: Path):
@@ -68,16 +79,20 @@ def _read(path: Path):
 def available() -> list[Script]:
     """Every script that can be read, by name. A broken one is left out (it
     must not take the list down) -- run() on it says what is wrong."""
-    out, seen = [], set()
+    out, seen = [], {}
     for d in script_dirs():
         for p in sorted(d.glob("*.py")):
-            if p.name.startswith("_") or p.stem in seen:
+            if p.name.startswith("_"):
+                continue
+            if p.stem in seen:
+                log.info("loading script %s skipped: already found in %s", p, seen[p.stem].parent)
                 continue
             try:
                 mod = _read(p)
             except Exception:
+                log.warning("loading script %s cannot be read, left out", p)
                 continue
-            seen.add(p.stem)
+            seen[p.stem] = p
             doc = (mod.__doc__ or "").strip().splitlines()
             out.append(Script(name=str(getattr(mod, "NAME", p.stem)),
                               description=doc[0] if doc else "", path=p))

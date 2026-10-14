@@ -19,6 +19,12 @@ NanoSpin group, Aalto University. Read `README.md` first.
   `analysis.py` (the "Analysis" menu, and `run_module()` for modules).
 - `src/aaltoview/analysis_link.py` -- viewer <-> analysis modules: folder scan
   (available), launch, beacon files (running), ZeroMQ + JSON (curves). No Qt.
+- `src/aaltoview/home.py` -- WHERE drop-ins are found: AALTOVIEW_HOME, the
+  checkout (own, then remembered), the copies BUNDLED in the package
+  (pyproject's package-dir ships `AnalysisModules/` and `LoadingScripts/` in the
+  wheel -- the only copies an AaltoFlow install has), then the user's
+  `%APPDATA%\AaltoView\<kind>`. First found wins. A bundled module's packages
+  are aaltoview dependencies; `tests/test_wheel.py` checks the wheel.
 - `AnalysisModules/<name>/` -- analysis modules, DROP-IN: a folder with
   `module.toml` (the menu entry) + `pyproject.toml`; the viewer scans the folder,
   the workspace glob `AnalysisModules/*` takes it in, `uv run --all-packages`

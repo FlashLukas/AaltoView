@@ -202,18 +202,21 @@ class FileBrowser(QtWidgets.QWidget):
         v.addLayout(row)
 
         # "load with a script": a correction applied to every file as it is
-        # read (aaltoview/loading.py; the scripts sit in LoadingScripts/)
+        # read (aaltoview/loading.py; the scripts sit in LoadingScripts/ folders)
+        from .. import loading as L
         row = QtWidgets.QHBoxLayout()
         row.addWidget(QtWidgets.QLabel("load with"))
         self.script_combo = QtWidgets.QComboBox()
         self.script_combo.setToolTip(
             "A loading script corrects every file as it is read (e.g. TR-MOKE unfold):\n"
             "the map, the 1D plots, the exports, the notebook and the analysis modules\n"
-            "all get the corrected data. Scripts: the LoadingScripts folder.")
+            "all get the corrected data. Your own scripts: drop a .py file into\n"
+            f"{L.user_dir_text()}")
         self.script_combo.currentIndexChanged.connect(lambda *_: self.scriptChanged.emit())
         row.addWidget(self.script_combo, 1)
         rescan = QtWidgets.QPushButton("↻"); rescan.setFixedWidth(32)
-        rescan.setToolTip("Look for new scripts in the LoadingScripts folder")
+        rescan.setToolTip("Look for new loading scripts (the bundled ones and yours, in\n"
+                          f"{L.user_dir_text()})")
         # a lambda: clicked(bool) would hand False to fill_scripts as the script
         # to select -- and quietly switch the choice back to none
         rescan.clicked.connect(lambda: self.fill_scripts())

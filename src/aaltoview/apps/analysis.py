@@ -64,12 +64,26 @@ class AnalysisMenu(QtWidgets.QMenu):
             a = self.addAction(f"Start {m.name} and send{how}")
             a.setToolTip(m.description)
             a.triggered.connect(lambda _=False, m=m: self.start_and_send(m))
+        user = AL.home.user_dir(AL.MODULES_DIR)
         if not inst:
             a = self.addAction("no analysis modules found")
             a.setEnabled(False)
-            a2 = self.addAction(f"(drop one into {AL.home.repo() / AL.MODULES_DIR})")
+            # the USER folder, never a path inside a venv: that is where an
+            # operator can drop a module without touching the installation
+            a2 = self.addAction(f"(drop one into {user})")
             a2.setEnabled(False)
+        self.addSeparator()
+        a3 = self.addAction("Open my analysis-modules folder")
+        a3.setToolTip(f"{user}\nYour own modules: drop a module folder (with its "
+                      "module.toml) in here.\nThe folder is created when you open it.")
+        a3.triggered.connect(self.open_user_folder)
         self.setToolTipsVisible(True)
+
+    @staticmethod
+    def open_user_folder():
+        from PySide6 import QtGui
+        d = AL.home.user_dir(AL.MODULES_DIR, create=True)
+        QtGui.QDesktopServices.openUrl(QtCore.QUrl.fromLocalFile(str(d)))
 
     def _curves(self):
         try:

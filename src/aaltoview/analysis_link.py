@@ -8,9 +8,11 @@ docs/ANALYSIS_MODULES.md explains how to write one.
 
 Three questions, three mechanisms:
 
-* WHICH modules are there?  Every folder in AnalysisModules/ (next to this
-  package's repository; more folders through AALTOVIEW_MODULES) with a
-  module.toml: key, name, description, and the Python package to start.
+* WHICH modules are there?  Every folder with a module.toml in one of the
+  AnalysisModules/ folders of home.search_dirs() -- the checkout's, the ones
+  bundled in the package, the user's own (%APPDATA%/AaltoView/AnalysisModules);
+  more folders through AALTOVIEW_MODULES, searched first. module.toml says:
+  key, name, description, and the Python package to start.
   Dropping a folder in is all it takes -- the viewer never imports a module's
   code, it reads the manifest and starts the module (launch()).
 * WHICH are running, and where?  A running module listens on a free TCP port
@@ -38,6 +40,7 @@ No Qt here: tests drive both ends in one process.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import shutil
 import subprocess
@@ -56,9 +59,9 @@ from .export import Curve, MapData, Selection, map_to_curves
 PROTOCOL = 1
 BEACON_ENV = "AALTOVIEW_ANALYSIS_DIR"      # tests point this at a temp folder
 MODULES_ENV = "AALTOVIEW_MODULES"          # extra module folders, os.pathsep-separated
-MODULES_DIR = "AnalysisModules"
-#: (the AaltoView checkout is home.repo(): this one's own when run from a
-#: checkout, the remembered one when installed into AaltoFlow's scan-core)
+MODULES_DIR = home.MODULES
+
+log = logging.getLogger(__name__)
 
 
 # ──────────────────────────────── available modules ───────────────────────────
@@ -92,47 +95,62 @@ def info_from_dict(d: dict, folder: Path | None = None) -> ModuleInfo:
 
 def module_dirs() -> list[Path]:
     dirs = [Path(p) for p in os.environ.get(MODULES_ENV, "").split(os.pathsep) if p]
-    dirs.append(home.repo() / MODULES_DIR)
+    dirs += home.search_dirs(MODULES_DIR)
     return [d for d in dirs if d.is_dir()]
 
 
 def installed() -> list[ModuleInfo]:
     """Every module folder with a readable module.toml, by name. A broken one
-    is skipped, not fatal: one bad folder must not take the menu down."""
-    out, seen = [], set()
+    is skipped, not fatal: one bad folder must not take the menu down. The
+    same key in two folders: the first in search order wins (module_dirs()),
+    the other is logged and left out."""
+    out, seen = [], {}
     for d in module_dirs():
         for manifest in sorted(d.glob("*/module.toml")):
             try:
                 info = info_from_dict(read_manifest(manifest), manifest.parent)
             except Exception:
+                log.warning("analysis module %s: unreadable module.toml, skipped", manifest.parent)
                 continue
-            if info.key not in seen:
-                seen.add(info.key)
-                out.append(info)
+            if info.key in seen:
+                log.info("analysis module %r in %s skipped: already found in %s",
+                         info.key, info.folder, seen[info.key])
+                continue
+            seen[info.key] = info.folder
+            out.append(info)
     return sorted(out, key=lambda m: m.name.lower())
 
 
 def launch_command(info: ModuleInfo) -> tuple[list[str], dict]:
     """(argv, extra environment) to start a module.
 
-    With uv and the module inside this repository's workspace: `uv run
-    --all-packages` from the repository, which first installs whatever a newly
-    dropped module needs (only the first start of that module takes long).
-    Otherwise the viewer's own Python with the module's src/ on the path --
-    enough when its packages are already there.
+    With uv and the module inside a CHECKOUT's AnalysisModules/ (a uv workspace
+    member): `uv run --all-packages` from that checkout, which first installs
+    whatever a newly dropped module needs (only the first start takes long).
+    Otherwise -- a module bundled in the installed package, or one in the
+    user's folder -- the viewer's own Python with the module's src/ on the
+    path. That needs the module's packages in the viewer's environment: the
+    bundled modules' are dependencies of aaltoview itself (pyproject.toml).
     """
     uv = shutil.which("uv")
     folder = info.folder
-    repo = home.repo()
-    in_repo = folder is not None and repo / MODULES_DIR in folder.parents
-    if uv and in_repo and (repo / "pyproject.toml").exists():
-        return ([uv, "run", "--project", str(repo), "--all-packages", "--extra", "gui",
+    ws = home.workspace_of(folder) if folder is not None else None
+    if uv and ws is not None:
+        return ([uv, "run", "--project", str(ws), "--all-packages", "--extra", "gui",
                  "python", "-m", info.module], {})
     env = {}
     if folder is not None and (folder / "src").is_dir():
         env["PYTHONPATH"] = os.pathsep.join(
             [str(folder / "src")] + [p for p in [os.environ.get("PYTHONPATH")] if p])
     return [sys.executable, "-m", info.module], env
+
+
+def launch_cwd(info: ModuleInfo) -> str | None:
+    """The checkout for a workspace module, else the module's own folder."""
+    if info.folder is None:
+        return None
+    ws = home.workspace_of(info.folder)
+    return str(ws if ws is not None else info.folder)
 
 
 def launch_log(info: ModuleInfo) -> Path:
@@ -151,7 +169,7 @@ def launch(info: ModuleInfo) -> subprocess.Popen:
     try:
         return subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT,
                                 stdin=subprocess.DEVNULL, env={**os.environ, **env},
-                                cwd=str(home.repo()) if home.repo().exists() else None,
+                                cwd=launch_cwd(info),
                                 creationflags=flags)
     finally:
         log.close()                     # the child has its own handle

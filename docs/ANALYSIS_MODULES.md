@@ -13,15 +13,29 @@ AaltoView ──"Analysis" menu──►  VNA-FMR fit    (AnalysisModules/vna-fm
 
 ## Drop in, and it is there
 
-A module is a folder in **`AnalysisModules/`**. To add one, copy the folder in.
-The next time the "Analysis" menu opens, the module is listed; there is
-nothing to register or install by hand. The first **Start … and send**
-installs the module's packages (e.g. lmfit), so that one start can take up to
-a minute. After that a start takes a few seconds.
+A module is a folder with a `module.toml`. To add one, copy the folder into
+an `AnalysisModules` folder. The next time the "Analysis" menu opens, the
+module is listed; there is nothing to register. The viewer looks in this order
+(`aaltoview/home.py`; the first folder with a module of a given key wins, later
+copies are skipped and logged):
 
-To remove a module, delete its folder. Module folders elsewhere on the PC can
-be added with the `AALTOVIEW_MODULES` environment variable (folders separated
-by `;`); they start with the viewer's own Python.
+| | folder | how a module there starts |
+|---|---|---|
+| 0 | `AALTOVIEW_MODULES` (folders separated by `;`) | the viewer's own Python |
+| 1 | `%AALTOVIEW_HOME%\AnalysisModules` | (as its kind below) |
+| 2 | the checkout the viewer runs from, then the one remembered in `%LOCALAPPDATA%\AaltoView\checkout.txt` | `uv run --all-packages` from that checkout: the first start installs the module's packages (up to a minute) |
+| 3 | `aaltoview/AnalysisModules` **inside the installed package** (the repository's `AnalysisModules/`, shipped in the wheel) | the viewer's own Python; the bundled modules' packages are aaltoview's own dependencies |
+| 4 | **`%APPDATA%\AaltoView\AnalysisModules`**, the user's own (Analysis → *Open my analysis-modules folder* creates it) | the viewer's own Python |
+
+So on a PC that only has AaltoFlow (the viewer lives inside scan-core's
+`.venv`), the bundled modules are there, and a lab's own module goes into the
+user folder -- never into the `.venv`. A module started with the viewer's own
+Python needs its packages in that environment already; a module that needs
+more (or uses a package the viewer lacks) is best developed in a checkout.
+A new bundled module: add its packages to aaltoview's `dependencies` in
+`pyproject.toml` too, and `tests/test_wheel.py` checks it reaches the wheel.
+
+To remove a module, delete its folder.
 
 ## Why separate programs
 
@@ -61,8 +75,8 @@ names the folder.
 
 | Question | Answer | Where |
 |---|---|---|
-| Which modules are there? | every `AnalysisModules/*/module.toml` | `analysis_link.installed()` |
-| How is one started? | `uv run --all-packages python -m <python>` from the AaltoView folder, with no console window; its output goes to `%LOCALAPPDATA%\AaltoView\analysis\<key>-start.log` | `analysis_link.launch()` |
+| Which modules are there? | every `*/module.toml` in the folders above | `analysis_link.installed()` |
+| How is one started? | `uv run --all-packages python -m <python>` from the checkout, or the viewer's Python with the module's `src/` on the path (see above), with no console window; its output goes to `%LOCALAPPDATA%\AaltoView\analysis\<key>-start.log` | `analysis_link.launch()` |
 | Which are running, and where? | a running module listens on a free port of 127.0.0.1 and writes a *beacon* file `{key, name, title, port, pid}` next to that log | `analysis_link.Listener` |
 | How do the curves get there? | ZeroMQ request/reply with JSON, the same pattern as the AaltoFlow instrument services | `analysis_link.request` |
 

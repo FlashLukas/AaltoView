@@ -88,8 +88,10 @@ again through the chosen script, which also picks up a script you have just
 edited. A script that fails shows nothing, never the previous picture or an
 uncorrected file.
 
-Scripts are `.py` files in **`LoadingScripts/`**: drop one in and it is
-listed. The folder's [README](LoadingScripts/README.md) has the three-line
+Scripts are `.py` files in a **`LoadingScripts/`** folder: drop one in and it
+is listed. Your own go into **`%APPDATA%\AaltoView\LoadingScripts`** (the
+"load with" tooltip names it); the ones in the repository's `LoadingScripts/`
+ship with AaltoView. The folder's [README](LoadingScripts/README.md) has the three-line
 contract. Two come with AaltoView: **TR-MOKE unfold (80 MHz laser)** and
 **(100 MHz laser)**. They undo the laser's aliasing, which conjugates the
 complex lock-in signal on half of the frequencies (a spatial FFT then shows a
@@ -100,15 +102,28 @@ dashed V instead of one branch).
 Fits and other analyses are separate programs that the viewer sends curves to
 (**1D plots → Analysis**) or whole maps (**Map → Analysis**: the map on
 screen, reference applied, complex values kept). Several can be open at once,
-and a busy or crashed module never takes the viewer down. A module is a folder in
-**`AnalysisModules/`**: drop one in and the viewer lists it. Its packages are
-installed the first time it starts.
+and a busy or crashed module never takes the viewer down. A module is a folder with a
+`module.toml`: drop one in and the viewer lists it.
 
-The viewer started from AaltoFlow (Mission Control's Data viewer button, the
-catalogue) is installed inside scan-core, where no `AnalysisModules/` folder
-exists. It offers the modules and loading scripts of the AaltoView checkout
-that last ran on this PC (remembered in `%LOCALAPPDATA%\AaltoView\checkout.txt`);
-set `AALTOVIEW_HOME` to choose another checkout.
+Where the viewer looks (the first folder with a module of a given name wins;
+later copies are skipped and logged):
+
+1. `AALTOVIEW_HOME\AnalysisModules` -- an override, if that variable is set;
+2. the checkout the viewer runs from (`uv run aaltoview`), and the checkout
+   that last ran on this PC (remembered in `%LOCALAPPDATA%\AaltoView\checkout.txt`);
+3. the modules **bundled inside the installed package** -- the repository's
+   `AnalysisModules/` travels in the wheel, so the viewer started from AaltoFlow
+   (Mission Control's Data viewer button, the measurement suite's Data tab, the
+   catalogue), which is installed inside scan-core with no checkout, offers them
+   too. Their packages (scipy, lmfit) are dependencies of AaltoView itself;
+4. **your own folder, `%APPDATA%\AaltoView\AnalysisModules`**: drop a module in
+   here, never into a `.venv`. **Analysis → Open my analysis-modules folder**
+   creates and opens it.
+
+Loading scripts are searched the same way (`...\LoadingScripts`). In a
+checkout, a module dropped into `AnalysisModules/` gets its packages installed
+on its first start (`uv run --all-packages`); anywhere else it starts with the
+viewer's own Python, so its packages must already be there.
 
 - **VNA-FMR fit** ([AnalysisModules/vna-fmr-fit](AnalysisModules/vna-fmr-fit/README.md)): complex
   Lorentzian for VNA data. It gives the resonance position, the linewidth

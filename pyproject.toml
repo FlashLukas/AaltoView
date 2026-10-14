@@ -11,6 +11,12 @@ dependencies = [
     "h5netcdf>=1.1",     # reads the .nc files without a system netCDF library
     "h5py>=3.9",         # h5netcdf's HDF5 backend -- NOT pulled in by h5netcdf itself
     "matplotlib>=3.7",   # exported figures; also works without the GUI
+    # What the BUNDLED analysis modules need (AnalysisModules/*/pyproject.toml).
+    # An installed viewer -- inside AaltoFlow's scan-core, on the lab PC --
+    # starts them with its own Python, so their packages must already be in
+    # that environment: no uv workspace, and maybe no internet, there.
+    "scipy>=1.10",       # spinwave-fft (least_squares), vna-fmr-fit (via lmfit)
+    "lmfit>=1.3",        # vna-fmr-fit
 ]
 
 [project.optional-dependencies]
@@ -44,12 +50,28 @@ dev = ["pytest>=8"]
 requires = ["setuptools>=77"]  # 77+: `license = "MIT"` (PEP 639)
 build-backend = "setuptools.build_meta"
 
-[tool.setuptools.packages.find]
-where = ["src"]
+# The code is in src/. The bundled analysis modules and loading scripts stay at
+# the TOP of the repository (where a developer drops new ones, and where the uv
+# workspace finds them) but are SHIPPED inside the package, as
+# site-packages/aaltoview/AnalysisModules and .../LoadingScripts: a viewer
+# installed without a checkout -- AaltoFlow's scan-core, the lab PC, every
+# installer user -- finds them there (aaltoview/home.py). package-dir maps the
+# two folders into the package; the list below is therefore written out (a new
+# sub-package of aaltoview must be added here -- tests/test_wheel.py checks).
+[tool.setuptools]
+package-dir = { "" = "src", "aaltoview.AnalysisModules" = "AnalysisModules", "aaltoview.LoadingScripts" = "LoadingScripts" }
+packages = ["aaltoview", "aaltoview.apps", "aaltoview.AnalysisModules", "aaltoview.LoadingScripts"]
 
-# the window icon travels with the package (setuptools ships only .py unless told)
+# setuptools ships only .py files of a package unless told
 [tool.setuptools.package-data]
-aaltoview = ["apps/icon.svg"]
+aaltoview = ["apps/icon.svg"]           # the window icon
+# each module: its manifest, its code and the files it may carry -- not its
+# tests, not build leftovers (*.egg-info, __pycache__)
+"aaltoview.AnalysisModules" = [
+    "*/module.toml", "*/pyproject.toml", "*/README.md",
+    "*/src/**/*.py", "*/src/**/*.svg", "*/src/**/*.png", "*/src/**/*.json", "*/src/**/*.csv",
+]
+"aaltoview.LoadingScripts" = ["*.py", "README.md"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests", "AnalysisModules/*/tests"]
