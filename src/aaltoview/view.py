@@ -173,7 +173,9 @@ def reduce_cube(da: xr.DataArray, x: str, y: str | None,
     part   : which piece of a complex detector to end up with. Applied LAST, so
              an average over a complex axis is coherent -- see the module note.
     runs   : for an image axis that goes up and down, which run(s) to show
-             (select_runs); ds = where its runs are read from (default: da).
+             (select_runs; {} = the defaults). None (the default) selects
+             nothing: the axis as it is, for a caller that chose its run
+             itself. ds = where its runs are read from (default: da).
     """
     slices = dict(slices or {})
     keep = [d for d in (y, x) if d]
@@ -184,7 +186,9 @@ def reduce_cube(da: xr.DataArray, x: str, y: str | None,
     if y is not None and y == x:
         raise ValueError("the two image axes must be different dimensions")
 
-    da, shown = select_runs(da, x, y, runs, ds)
+    # only when asked (runs given, {} = the defaults): a caller that has picked
+    # its run itself (scan-core's live view) gets the plain reduction it had
+    da, shown = select_runs(da, x, y, runs, ds) if runs is not None else (da, {})
     others = [d for d in da.dims if d not in keep]
     # Count the real (non-NaN) cells BEFORE reducing, so "62 % of the average is
     # actually data" can be shown. On a finished scan this is 1.0 and the label

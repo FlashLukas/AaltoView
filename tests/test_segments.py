@@ -114,8 +114,12 @@ def test_a_value_names_its_run(files):
 def test_a_map_shows_one_run_ascending_never_two_in_a_cell(files):
     ds = _load(files["map"])
     da = V.detector(ds, "lockin")
-    r = V.reduce_cube(da, "rf_freq", "field", ds=ds)                  # default: first run
+    r = V.reduce_cube(da, "rf_freq", "field", runs={}, ds=ds)         # default: first run
     assert r.data.shape == (21, 61)
+    # runs=None: nothing selected -- a caller that picked its run itself
+    # (scan-core's live view isel()s first) gets the axis as it is
+    r = V.reduce_cube(da.isel(field=slice(21, 61)), "rf_freq", "field")
+    assert r.data.shape == (40, 61) and r.index == {}
     r = V.reduce_cube(da, "rf_freq", "field", runs={"field": 1}, ds=ds)
     assert r.data.shape == (40, 61)
     y = r.data["field"].values
@@ -125,7 +129,7 @@ def test_a_map_shows_one_run_ascending_never_two_in_a_cell(files):
     assert r.data.shape == (101, 61)
     assert r.data["field"].values.tolist() == list(range(101))
     # a line shows every run, in measured order
-    r = V.reduce_cube(da, "field", None, {"rf_freq": Slice("at", 30)}, ds=ds)
+    r = V.reduce_cube(da, "field", None, {"rf_freq": Slice("at", 30)}, runs={}, ds=ds)
     assert r.data.shape == (101,)
 
 
