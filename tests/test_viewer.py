@@ -536,3 +536,25 @@ def test_an_uneven_axis_that_is_not_a_loop_is_drawn_at_true_widths():
     assert np.bincount(idx).min() >= 3                   # the narrowest cell ~4 columns
     # a descending axis: the same cells, counted from the other end
     assert np.array_equal(even_index(E.edges(np.geomspace(20, 1, 61))), 60 - idx[::-1])
+
+
+def test_a_plain_dim_row_state_is_the_four_values_it_always_was():
+    """scan-core publishes DimRow.state() as a view state and applies it on
+    another PC only when it has FOUR entries (mode, at, lo, hi). The run index
+    added for loops broke that (the held index stayed at 0), so only a row of
+    an up-and-down axis carries a fifth entry."""
+    from aaltoview.apps.widgets import DimRow
+    from aaltoview.segments import Segments
+    QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    a, b = DimRow("freq", np.arange(5.0)), DimRow("freq", np.arange(5.0))
+    a.slider.setValue(3)
+    st = a.state()
+    assert st == ("at", 3, 0, 4)
+    b.restore(tuple(list(st)))
+    assert b.state() == st and b.slice_().i0 == 3
+    seg = Segments(np.array([0, 0, 0, 1, 1]), [{"direction": 1}, {"direction": -1}])
+    c = DimRow("field", np.array([0.0, 1, 2, 1, 0]), segments=seg)
+    c.mode.setCurrentText("mean of run"); c.run.setCurrentIndex(1)
+    d = DimRow("field", np.array([0.0, 1, 2, 1, 0]), segments=seg)
+    d.restore(c.state())
+    assert len(c.state()) == 5 and d.slice_().span(5) == (3, 4)

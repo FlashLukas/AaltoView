@@ -110,9 +110,12 @@ class DimRow(QtWidgets.QWidget):
         return V.Slice("mean", self.lo.value(), self.hi.value())
 
     def state(self) -> tuple:
-        """Everything worth restoring when the same scan is redrawn."""
-        return (self.mode.currentText(), self.slider.value(),
-                self.lo.value(), self.hi.value(), self.run.currentIndex())
+        """Everything worth restoring when the same scan is redrawn:
+        (mode, at, lo, hi), plus the run averaged over -- ONLY for an axis that
+        goes up and down. An ordinary row keeps its 4-tuple exactly: scan-core
+        sends it to other PCs as a view state and checks its length."""
+        st = (self.mode.currentText(), self.slider.value(), self.lo.value(), self.hi.value())
+        return st + (self.run.currentIndex(),) if self.segs else st
 
     def restore(self, st: tuple) -> None:
         mode, at, lo, hi = st[:4]
