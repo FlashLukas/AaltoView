@@ -375,7 +375,12 @@ def test_a_one_point_line_survives_the_drawing_with_max(viewer):
         m.img._renderRequired = True
         m.img.render()
         xds, yds = m.img._lastDownsample
-        assert xds > 20                                             # it IS downsampled
+        # it IS downsampled, by enough for the mean to hide the tone: one -20
+        # point among xds of -75 averages to -75 + 55/xds, below -60 from xds = 4.
+        # (How much exactly depends on the map's on-screen width, which the
+        # offscreen platform does not pin to the window size -- 16 on one PC;
+        # the old "> 20" failed there.)
+        assert xds >= 4
         return float(np.nanmax(m.img._last_drawn))
 
     # what render() handed on: catch the downsampled image
