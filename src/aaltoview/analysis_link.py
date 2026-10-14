@@ -341,7 +341,14 @@ def map_to_dict(m: MapData) -> dict:
             "label": m.label, "x_name": m.x_name, "x_unit": m.x_unit,
             "y_name": m.y_name, "y_unit": m.y_unit, "z_name": m.z_name, "z_unit": m.z_unit,
             "source": m.source, "selection": m.selection.to_dict(), "ref": m.ref,
-            "held": {k: [float(v), u] for k, (v, u) in m.held.items()}}
+            "held": {k: [float(v), u] for k, (v, u) in m.held.items()},
+            # an axis that goes up and down: the file index + run of each line
+            "x_index": _ints(m.x_index), "y_index": _ints(m.y_index),
+            "x_tags": m.x_tags, "y_tags": m.y_tags}
+
+
+def _ints(a) -> list | None:
+    return None if a is None else [int(v) for v in np.asarray(a)]
 
 
 def map_from_dict(d: dict) -> MapData:
@@ -354,7 +361,10 @@ def map_from_dict(d: dict) -> MapData:
                    y_unit=d["y_unit"], z_name=d["z_name"], z_unit=d["z_unit"],
                    selection=Selection.from_dict(d["selection"]), source=d.get("source"),
                    z=z, ref=d.get("ref"),
-                   held={k: (float(v), str(u)) for k, (v, u) in d.get("held", {}).items()})
+                   held={k: (float(v), str(u)) for k, (v, u) in d.get("held", {}).items()},
+                   x_index=None if d.get("x_index") is None else np.asarray(d["x_index"], dtype=int),
+                   y_index=None if d.get("y_index") is None else np.asarray(d["y_index"], dtype=int),
+                   x_tags=d.get("x_tags"), y_tags=d.get("y_tags"))
 
 
 # ─────────────────────────────── the module's end ─────────────────────────────

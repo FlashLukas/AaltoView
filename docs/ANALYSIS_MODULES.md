@@ -114,6 +114,13 @@ the viewer:
 Holes (NaN) from a running or aborted scan stay holes, so NaN-aware code is a
 must.
 
+**Loops.** When the curve's X goes up AND down (a hysteresis loop: a field
+0 → 100 → −100 → 100 mT), the module gets **one curve per run**, its label
+ending in "· up" / "· down" (or "· seg 2 down"), its `selection.runs` naming
+the run. A fit of the way up and of the way down are two fits; nothing arrives
+folded back on itself. A held loop value says its run too ("field = 50 mT ·
+down"), while `held` keeps the number.
+
 ## What a map carries
 
 **Map → Analysis** sends the map on screen as an `aaltoview.export.MapData`.
@@ -128,6 +135,7 @@ limits) is not.
 | `x_name`, `x_unit`, `y_name`, `y_unit`, `z_name`, `z_unit` | names and units |
 | `label`, `source`, `selection`, `held` | as for a curve (`held`: the dims other than x and y) |
 | `ref` | the reference applied: `{"mode", "op", "i"}`, or `None` |
+| `x_index`, `y_index`, `x_tags`, `y_tags` | only for an axis that goes up and down (the map then shows ONE run): the file index of each column / row and its run's name ("down"); `None` otherwise. `map_to_curves` uses them, so each curve is labelled "field = -50 mT · down" and replays from the right point of the file |
 
 How a map arrives depends on the module:
 

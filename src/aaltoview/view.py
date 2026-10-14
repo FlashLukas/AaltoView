@@ -29,12 +29,13 @@ Two decisions that matter physically
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import numpy as np
 import xarray as xr
 
 from .data import as_complex, complex_names
+from .segments import INDEX, LINES, segments_of, valid_choice
 
 #: How a dimension that is neither of the two image axes is disposed of.
 #: "at"   : hold it at index i0 (one slice of the cube)
@@ -72,6 +73,11 @@ class Reduced:
     coverage: float                # fraction of contributing cells that were real
     averaged: int                  # how many cube cells went into each pixel
     note: str = ""
+    #: for an image axis that goes up AND down (segments.py): the indices IN
+    #: THE FILE of the points shown, in the order shown -- position j on the
+    #: screen is point index[dim][j] of the file (a cut, a held value and the
+    #: notebook all need the file's index, not the screen's)
+    index: dict = field(default_factory=dict)
 
 
 # ─────────────────────────── what can be displayed ────────────────────────────
@@ -120,15 +126,54 @@ def apply_part(da: xr.DataArray, part: str) -> xr.DataArray:
 
 # ───────────────────────────── the reduction ──────────────────────────────────
 
+def select_runs(da: xr.DataArray, x: str, y: str | None, runs: dict | None = None,
+                ds: xr.Dataset | None = None) -> tuple[xr.DataArray, dict]:
+    """Apply the run choice of each image axis that goes up AND down.
+
+    runs: {dim: choice} (segments.py: LINES, INDEX or a run number). A map
+    (y given) shows ONE run of a segmented axis -- the first unless told
+    otherwise -- because two values cannot share one cell; a line along x
+    shows every run by default (the caller draws one line per run).
+
+    Returns (da, {dim: file indices shown}) -- the indices only for the
+    segmented axes, so a position on the screen can be traced to the file.
+    """
+    runs = dict(runs or {})
+    shown = {}
+    for dim in [d for d in (x, y) if d]:
+        if dim not in da.dims:
+            continue
+        segs = segments_of(ds if ds is not None else da, dim)
+        if segs is None or segs.seg.size != da.sizes[dim]:
+            continue
+        line = y is None and dim == x
+        choice = valid_choice(segs, runs.get(dim), line)
+        n = da.sizes[dim]
+        if choice == INDEX:
+            da = da.assign_coords({dim: np.arange(n, dtype=float)})
+            shown[dim] = np.arange(n)
+        elif choice == LINES:
+            shown[dim] = np.arange(n)
+        else:
+            vals = da[dim].values if dim in da.coords else None
+            idx = segs.ascending(int(choice), vals)
+            da = da.isel({dim: idx})
+            shown[dim] = idx
+    return da, shown
+
+
 def reduce_cube(da: xr.DataArray, x: str, y: str | None,
                 slices: dict[str, Slice] | None = None,
-                part: str = "abs") -> Reduced:
+                part: str = "abs", runs: dict | None = None,
+                ds: xr.Dataset | None = None) -> Reduced:
     """Collapse `da` onto the axes (y, x), disposing of every other dim.
 
     x, y   : dimension names for the image; y=None gives a 1-D line along x.
     slices : what to do with each remaining dim (default: hold at index 0).
     part   : which piece of a complex detector to end up with. Applied LAST, so
              an average over a complex axis is coherent -- see the module note.
+    runs   : for an image axis that goes up and down, which run(s) to show
+             (select_runs); ds = where its runs are read from (default: da).
     """
     slices = dict(slices or {})
     keep = [d for d in (y, x) if d]
@@ -139,6 +184,7 @@ def reduce_cube(da: xr.DataArray, x: str, y: str | None,
     if y is not None and y == x:
         raise ValueError("the two image axes must be different dimensions")
 
+    da, shown = select_runs(da, x, y, runs, ds)
     others = [d for d in da.dims if d not in keep]
     # Count the real (non-NaN) cells BEFORE reducing, so "62 % of the average is
     # actually data" can be shown. On a finished scan this is 1.0 and the label
@@ -177,7 +223,7 @@ def reduce_cube(da: xr.DataArray, x: str, y: str | None,
     if averaged > 1 and np.iscomplexobj(sub.values) and part in ("abs", "arg"):
         note = "coherent average (complex averaged, then " + part + ")"
     return Reduced(data=out, x=x, y=y, label=str(da.name or ""),
-                   coverage=coverage, averaged=averaged, note=note)
+                   coverage=coverage, averaged=averaged, note=note, index=shown)
 
 
 def default_axes(da: xr.DataArray) -> tuple[str, str | None]:
@@ -196,10 +242,31 @@ def default_axes(da: xr.DataArray) -> tuple[str, str | None]:
 
 
 def coord_text(ds, dim: str, i: int) -> str:
-    """'3.712 GHz' rather than 'index 7' -- the operator thinks in the quantity."""
+    """'3.712 GHz' rather than 'index 7' -- the operator thinks in the quantity.
+
+    On an axis that goes up AND down the value alone is ambiguous (50 mT is
+    on the way up and on the way down), so the run is named: '50 mT · down'."""
+    return coord_texts(ds, dim, [i])[0]
+
+
+def coord_texts(ds, dim: str, indices=None) -> list[str]:
+    """coord_text for many points at once (the runs are worked out once)."""
     try:
-        val = float(np.asarray(ds[dim].values)[i])
+        vals = np.asarray(ds[dim].values)
+        n = vals.size
     except Exception:
-        return f"#{i}"
+        return [f"#{i}" for i in (indices or [])]
+    idx = range(n) if indices is None else indices
     unit = ds[dim].attrs.get("units", "") if dim in ds.coords else ""
-    return f"{val:g} {unit}".strip()
+    segs = segments_of(ds, dim)
+    out = []
+    for i in idx:
+        try:
+            t = f"{float(vals[i]):g} {unit}".strip()
+        except Exception:
+            out.append(f"#{i}")
+            continue
+        if segs is not None and 0 <= int(i) < segs.seg.size:
+            t = f"{t} · {segs.name_at(int(i))}"
+        out.append(t)
+    return out

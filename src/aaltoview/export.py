@@ -39,6 +39,7 @@ from pathlib import Path
 import numpy as np
 import xarray as xr
 
+from .segments import INDEX, LINES, Segments, segments_of, valid_choice
 from .view import Reduced, Slice, apply_part, coord_text, detector, reduce_cube
 
 #: How a curve is scaled for display/export. The stored numbers never change;
@@ -85,6 +86,10 @@ class Selection:
     #: a CUT of a referenced map: {"x", "y" (the map's axes), "mode", "op", "i"}
     #: -- the line is taken from the map AFTER the reference (see ref_line)
     ref: dict | None = None
+    #: an image axis that goes up AND down: which run(s) to show, {dim:
+    #: "lines" | "index" | run number} (segments.py). Missing = the default:
+    #: every run as its own line on a 1-D plot, the first run on a map.
+    runs: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         d = {"detector": self.detector, "x": self.x, "y": self.y, "part": self.part,
@@ -93,6 +98,9 @@ class Selection:
                         for d, s in self.slices.items()}}
         if self.ref:
             d["ref"] = dict(self.ref)
+        if self.runs:
+            d["runs"] = {k: (v if isinstance(v, str) else int(v))
+                         for k, v in self.runs.items()}
         return d
 
     @classmethod
@@ -101,7 +109,8 @@ class Selection:
                    part=d.get("part", "abs"),
                    slices={k: Slice(v["mode"], v["i0"], v.get("i1"))
                            for k, v in d.get("slices", {}).items()},
-                   ref=dict(d["ref"]) if d.get("ref") else None)
+                   ref=dict(d["ref"]) if d.get("ref") else None,
+                   runs=dict(d.get("runs") or {}))
 
 
 @dataclass
@@ -123,6 +132,47 @@ class Curve:
     #: the dims held at one value, {dim: (value, unit)}: "this sweep was at
     #: 8 GHz" as a number, so a fit result can be plotted against it
     held: dict[str, tuple[float, str]] = field(default_factory=dict)
+    #: X goes up AND down (a hysteresis loop) and every run is shown: the run
+    #: number of each point and one info dict per run (segments_json). The
+    #: curve is then DRAWN and EXPORTED as one line per run (curve_runs).
+    segment: np.ndarray | None = None
+    runs: list[dict] | None = None
+
+
+def curve_runs(c: "Curve") -> list[tuple[str | None, np.ndarray]]:
+    """[(run name, indices to draw)] of a curve: one entry per run when its X
+    goes up and down (a joined run starts at the previous run's last point,
+    so the loop is closed as measured), else one entry with every point."""
+    if c.segment is None or not c.runs:
+        return [(None, np.arange(np.asarray(c.x).size))]
+    segs = Segments(np.asarray(c.segment, dtype=int), list(c.runs))
+    return [(segs.name(k), segs.line_indices(k)) for k in range(segs.n)]
+
+
+def run_label(label: str, run: str | None) -> str:
+    """'field = 8 GHz · down' -- a label with its run, when it has one."""
+    return label if not run else f"{label} · {run}"
+
+
+def split_runs(c: "Curve") -> list["Curve"]:
+    """A curve whose X goes up AND down as one curve PER RUN (labels "· up",
+    "· down"), each with its own selection: what an analysis module gets --
+    a fit of a loop wants the branches apart, and its label says which."""
+    if c.segment is None or not c.runs:
+        return [c]
+    out = []
+    segs = Segments(np.asarray(c.segment, dtype=int), list(c.runs))
+    for k in range(segs.n):
+        idx = segs.indices(k)
+        sel = Selection.from_dict(c.selection.to_dict())
+        sel.runs[c.x_name] = k
+        out.append(Curve(x=np.asarray(c.x)[idx].copy(), y=np.asarray(c.y)[idx].copy(),
+                         label=run_label(c.label, segs.name(k)), x_name=c.x_name,
+                         x_unit=c.x_unit, y_name=c.y_name, y_unit=c.y_unit,
+                         selection=sel, source=c.source, visible=c.visible,
+                         z=None if c.z is None else np.asarray(c.z)[idx].copy(),
+                         held=dict(c.held)))
+    return out
 
 
 @dataclass
@@ -158,6 +208,12 @@ class Map:
     levels: tuple[float, float]
     selection: Selection
     source: str | None = None
+    #: an axis that goes up AND down: the FILE index of each column / row
+    #: shown (None = 0, 1, 2 ...) and its run's name ("down"; None = no runs)
+    x_index: np.ndarray | None = None
+    y_index: np.ndarray | None = None
+    x_tags: list[str] | None = None
+    y_tags: list[str] | None = None
 
 
 # ───────────────────────────── building them ──────────────────────────────────
@@ -175,6 +231,69 @@ def coords_of(ds: xr.Dataset, dim: str, n: int) -> np.ndarray:
     if dim in ds.coords:
         return np.asarray(ds[dim].values, dtype=float)
     return np.arange(n, dtype=float)
+
+
+def shown_coords(ds: xr.Dataset, red: Reduced, dim: str, n: int) -> np.ndarray:
+    """The coordinate of an image axis AS SHOWN: one run of an up-and-down
+    axis, or point numbers -- whatever the reduction left on it."""
+    if dim in red.index and dim in red.data.coords:
+        return np.asarray(red.data[dim].values, dtype=float)
+    return coords_of(ds, dim, n)
+
+
+def shown_indices(ds: xr.Dataset, sel: Selection, dim: str) -> np.ndarray:
+    """The FILE indices of the points an image axis of `sel` shows, in the
+    order shown: one run of an up-and-down axis (ascending), else all."""
+    n = detector(ds, sel.detector).sizes[dim]
+    segs = segments_of(ds, dim)
+    if segs is None or segs.seg.size != n:
+        return np.arange(n)
+    choice = valid_choice(segs, sel.runs.get(dim), sel.y is None and dim == sel.x)
+    if isinstance(choice, int):
+        return segs.ascending(choice, coords_of(ds, dim, n))
+    return np.arange(n)
+
+
+def _axis_runs(ds: xr.Dataset, red: Reduced, dim: str | None, sel: Selection):
+    """(file indices shown, run name of each) for a segmented image axis;
+    (None, None) for an ordinary one."""
+    if dim is None or dim not in red.index:
+        return None, None
+    segs = segments_of(ds, dim)
+    if segs is None:
+        return None, None
+    idx = np.asarray(red.index[dim], dtype=int)
+    if axis_unit(ds, sel, dim) == "point #":
+        # shown by point number: the tag carries the value too ("50 mT · down")
+        from .view import coord_texts
+        return idx, coord_texts(ds, dim, idx.tolist())
+    return idx, [segs.name_at(i) for i in idx]
+
+
+def axis_unit(ds: xr.Dataset, sel: Selection, dim: str) -> str:
+    """The unit of an image axis as shown: "point #" when an up-and-down axis
+    is drawn against its point number, else the coordinate's own."""
+    segs = segments_of(ds, dim)
+    if segs is not None and valid_choice(
+            segs, sel.runs.get(dim), sel.y is None and dim == sel.x) == INDEX:
+        return "point #"
+    return units_of(ds, dim)
+
+
+def runs_text(ds: xr.Dataset, sel: Selection) -> str:
+    """'field down' -- which run of each up-and-down image axis is shown
+    (nothing for a line plot that draws every run: its legend names them)."""
+    bits = []
+    for dim in [d for d in (sel.x, sel.y) if d]:
+        segs = segments_of(ds, dim)
+        if segs is None:
+            continue
+        choice = valid_choice(segs, sel.runs.get(dim), sel.y is None and dim == sel.x)
+        if choice == LINES:
+            continue
+        bits.append(f"{dim} by point #" if choice == INDEX else
+                    f"{dim} {segs.name(int(choice))}")
+    return ", ".join(bits)
 
 
 def quantity_name(sel: Selection, is_complex: bool) -> str:
@@ -195,15 +314,26 @@ def describe_slices(ds: xr.Dataset, sel: Selection) -> str:
         i0, i1 = s.span(da.sizes[d])
         if s.mode == "at":
             bits.append(f"{d} = {coord_text(ds, d, i0)}")
+            continue
+        segs = segments_of(ds, d)
+        run = None
+        if segs is not None:
+            run = next((k for k in range(segs.n) if segs.span(k) == (i0, i1)), None)
+        if run is not None:
+            bits.append(f"{d} mean of the {segs.name(run)} run")
         elif i0 == 0 and i1 == da.sizes[d] - 1:
             bits.append(f"{d} mean")
         else:
             bits.append(f"{d} mean {coord_text(ds, d, i0)} ... {coord_text(ds, d, i1)}")
+        if segs is not None and run is None and len(set(segs.seg[i0:i1 + 1].tolist())) > 1:
+            # never silently: an average across a turning point mixes branches
+            bits[-1] += " (up and down mixed)"
     return ", ".join(bits)
 
 
 def reduce(ds: xr.Dataset, sel: Selection) -> Reduced:
-    return reduce_cube(detector(ds, sel.detector), sel.x, sel.y, sel.slices, sel.part)
+    return reduce_cube(detector(ds, sel.detector), sel.x, sel.y, sel.slices, sel.part,
+                       runs=sel.runs, ds=ds)
 
 
 def make_curve(ds: xr.Dataset, sel: Selection, source: str | Path | None = None,
@@ -219,37 +349,57 @@ def make_curve(ds: xr.Dataset, sel: Selection, source: str | Path | None = None,
     y_name = quantity_name(sel, cplx)
     y_unit = "rad" if (sel.part == "arg" and cplx) else units_of(ds, sel.detector)
     if sel.ref:
-        zl = ref_line(ds, sel)
+        zl, x = ref_line(ds, sel, with_x=True)
         y = np.asarray(apply_part(xr.DataArray(zl), sel.part).values, dtype=float).copy()
         style, msel = _ref_style(sel)
         y_name, y_unit = _ref_name_unit(ds, msel, style, y_name, y_unit)
+        x = np.asarray(x, dtype=float).copy()
     else:
-        red = reduce_cube(da, sel.x, None, sel.slices, sel.part)
+        red = reduce_cube(da, sel.x, None, sel.slices, sel.part, runs=sel.runs, ds=ds)
         y = np.asarray(red.data.values, dtype=float).copy()
-    x = coords_of(ds, sel.x, y.size).copy()
+        x = shown_coords(ds, red, sel.x, y.size).copy()
     if label is None:
         label = describe_slices(ds, sel) or sel.detector
+        shown = runs_text(ds, Selection(sel.detector, sel.x, None, runs=sel.runs))
+        if shown:
+            label += f" ({shown})"
         if sel.ref:
             label += f" ({reference_text(ds, msel, style)})"
     z = None
     if cplx:
         z = (zl.astype(complex).copy() if sel.ref else
-             np.asarray(reduce_cube(da, sel.x, None, sel.slices, "complex").data.values,
+             np.asarray(reduce_cube(da, sel.x, None, sel.slices, "complex",
+                                    runs=sel.runs, ds=ds).data.values,
                         dtype=complex).copy())
-    return Curve(x=x, y=y, label=label, x_name=sel.x, x_unit=units_of(ds, sel.x),
+    # every run of an up-and-down X: the curve remembers which point is on
+    # which run, so it is drawn and written one line per run
+    segment = runs = None
+    segs = segments_of(ds, sel.x)
+    if (segs is not None and segs.seg.size == x.size
+            and valid_choice(segs, sel.runs.get(sel.x), True) == LINES):
+        segment, runs = segs.seg.copy(), [dict(r) for r in segs.info]
+    return Curve(x=x, y=y, label=label, x_name=sel.x, x_unit=axis_unit(ds, sel, sel.x),
                  y_name=y_name, y_unit=y_unit,
                  selection=sel, source=str(source) if source else None,
-                 z=z, held=held_values(ds, sel, da))
+                 z=z, held=held_values(ds, sel, da), segment=segment, runs=runs)
 
 
 def _ref_style(sel: Selection) -> tuple["MapStyle", Selection]:
     """The map a referenced cut came from: its style (reference only) and axes."""
     r = sel.ref
+    # An up-and-down axis of that map: the run the cut was taken from when one
+    # was chosen; otherwise EVERY point in measured order ("index"), so a
+    # held point of any run can be found and a line keeps all its runs.
+    runs = dict(sel.runs)
+    for d in (r["x"], r["y"]):
+        if runs.get(d) in (None, LINES):
+            runs[d] = INDEX
     return (MapStyle(ref=r["mode"], ref_op=r.get("op", "divide"), ref_i=int(r.get("i", -1))),
-            Selection(sel.detector, x=r["x"], y=r["y"], slices=sel.slices, part=sel.part))
+            Selection(sel.detector, x=r["x"], y=r["y"], slices=sel.slices, part=sel.part,
+                      runs=runs))
 
 
-def ref_line(ds: xr.Dataset, sel: Selection) -> np.ndarray:
+def ref_line(ds: xr.Dataset, sel: Selection, with_x: bool = False):
     """A cut of a referenced map, as COMPLEX values along sel.x: the map (its
     two axes, everything else as sel says) referenced as a whole, then the line
     at the held index. So a column divided by the 800 mT column, a row divided
@@ -261,16 +411,33 @@ def ref_line(ds: xr.Dataset, sel: Selection) -> np.ndarray:
         raise ValueError(f"a referenced cut runs along {msel.x} or {msel.y}")
     da = detector(ds, sel.detector)
     slices = {d: s for d, s in sel.slices.items() if d != held}
-    red = reduce_cube(da, msel.x, msel.y, slices, "complex")
+    red = reduce_cube(da, msel.x, msel.y, slices, "complex", runs=msel.runs, ds=ds)
     ny, nx = red.data.shape
-    zc = reference_values(red.data.values, style, coords_of(ds, msel.x, nx),
-                          coords_of(ds, msel.y, ny))
+
+    def axis(dim, n):
+        # all points in measured order: their TRUE values, not point numbers
+        if sel.runs.get(dim) in (None, LINES):
+            return coords_of(ds, dim, n)
+        return shown_coords(ds, red, dim, n)
+    xs, ys = axis(msel.x, nx), axis(msel.y, ny)
+    zc = reference_values(red.data.values, style, xs, ys)
     s = sel.slices.get(held, Slice())
     if s.mode != "at":
         raise ValueError(f"hold {held} at one value to reference along it "
                          f"(it is averaged now)")
     k = s.span(da.sizes[held])[0]
-    return np.asarray(zc[k] if held == msel.y else zc[:, k])
+    if held in red.index:
+        # the held axis goes up and down: the map shows one run; find the
+        # held point (a FILE index) among the lines it shows
+        pos = np.flatnonzero(np.asarray(red.index[held]) == k)
+        if pos.size == 0:
+            raise ValueError(f"{held} = {coord_text(ds, held, k)} is not on the "
+                             f"run the map shows")
+        k = int(pos[0])
+    line = np.asarray(zc[k] if held == msel.y else zc[:, k])
+    if with_x:
+        return line, (xs if held == msel.y else ys)
+    return line
 
 
 def _ref_name_unit(ds, sel: Selection, style: "MapStyle", name: str, unit: str):
@@ -359,14 +526,14 @@ def make_map(ds: xr.Dataset, sel: Selection, style: MapStyle | None = None,
     name = quantity_name(sel, cplx)
     unit = "rad" if (sel.part == "arg" and cplx) else units_of(ds, sel.detector)
     if style.ref == "none":
-        red = reduce_cube(da, sel.x, sel.y, sel.slices, sel.part)
+        red = reduce_cube(da, sel.x, sel.y, sel.slices, sel.part, runs=sel.runs, ds=ds)
         z = np.asarray(red.data.values, dtype=float)
     else:
         # reference BEFORE |z| / arg: the ratio of two complex numbers
-        red = reduce_cube(da, sel.x, sel.y, sel.slices, "complex")
+        red = reduce_cube(da, sel.x, sel.y, sel.slices, "complex", runs=sel.runs, ds=ds)
         ny, nx = red.data.shape
-        zc = reference_values(red.data.values, style, coords_of(ds, sel.x, nx),
-                              coords_of(ds, sel.y, ny))
+        zc = reference_values(red.data.values, style, shown_coords(ds, red, sel.x, nx),
+                              shown_coords(ds, red, sel.y, ny))
         red.data = apply_part(red.data.copy(data=zc), sel.part)
         if red.averaged > 1 and cplx and sel.part in ("abs", "arg"):
             red.note = "coherent average (complex averaged, then " + sel.part + ")"
@@ -378,11 +545,14 @@ def make_map(ds: xr.Dataset, sel: Selection, style: MapStyle | None = None,
         name, unit = f"{name} (normalised per {style.norm[:-1]})", ""
     if style.log:
         name, unit = f"log10 {name}", ""
-    m = Map(z=z, x=coords_of(ds, sel.x, nx), y=coords_of(ds, sel.y, ny),
-            x_name=sel.x, x_unit=units_of(ds, sel.x),
-            y_name=sel.y, y_unit=units_of(ds, sel.y),
+    xi, xt = _axis_runs(ds, red, sel.x, sel)
+    yi, yt = _axis_runs(ds, red, sel.y, sel)
+    m = Map(z=z, x=shown_coords(ds, red, sel.x, nx), y=shown_coords(ds, red, sel.y, ny),
+            x_name=sel.x, x_unit=axis_unit(ds, sel, sel.x),
+            y_name=sel.y, y_unit=axis_unit(ds, sel, sel.y),
             z_name=name, z_unit=unit, levels=map_levels(z, style),
-            selection=sel, source=str(source) if source else None)
+            selection=sel, source=str(source) if source else None,
+            x_index=xi, y_index=yi, x_tags=xt, y_tags=yt)
     return m, red
 
 
@@ -410,6 +580,12 @@ class MapData:
     z: np.ndarray | None = None     # (ny, nx), complex
     held: dict[str, tuple[float, str]] = field(default_factory=dict)
     ref: dict | None = None         # the reference applied: {"mode", "op", "i"}
+    #: as on Map: the file index of each column / row (an up-and-down axis
+    #: shows one run) and its run's name; None = an ordinary axis
+    x_index: np.ndarray | None = None
+    y_index: np.ndarray | None = None
+    x_tags: list[str] | None = None
+    y_tags: list[str] | None = None
 
 
 def make_map_data(ds: xr.Dataset, sel: Selection, style: MapStyle | None = None,
@@ -424,11 +600,17 @@ def make_map_data(ds: xr.Dataset, sel: Selection, style: MapStyle | None = None,
     cplx = np.iscomplexobj(da.values)
     name = quantity_name(sel, cplx)
     unit = "rad" if (sel.part == "arg" and cplx) else units_of(ds, sel.detector)
-    red = reduce_cube(da, sel.x, sel.y, sel.slices, "complex" if cplx else sel.part)
+    red = reduce_cube(da, sel.x, sel.y, sel.slices, "complex" if cplx else sel.part,
+                      runs=sel.runs, ds=ds)
     zc = np.asarray(red.data.values)
     ny, nx = zc.shape
-    x, y = coords_of(ds, sel.x, nx), coords_of(ds, sel.y, ny)
+    x, y = shown_coords(ds, red, sel.x, nx), shown_coords(ds, red, sel.y, ny)
     label = describe_slices(ds, sel) or sel.detector
+    shown = runs_text(ds, sel)
+    if shown:
+        label += f" ({shown})"
+    xi, xt = _axis_runs(ds, red, sel.x, sel)
+    yi, yt = _axis_runs(ds, red, sel.y, sel)
     ref = None
     if style.ref != "none":
         zc = reference_values(zc, style, x, y)
@@ -437,11 +619,12 @@ def make_map_data(ds: xr.Dataset, sel: Selection, style: MapStyle | None = None,
         ref = {"mode": style.ref, "op": style.ref_op, "i": int(style.ref_i)}
     values = np.asarray(apply_part(xr.DataArray(zc), sel.part).values, dtype=float)
     return MapData(x=x.copy(), y=y.copy(), values=values.copy(), label=label,
-                   x_name=sel.x, x_unit=units_of(ds, sel.x),
-                   y_name=sel.y, y_unit=units_of(ds, sel.y), z_name=name, z_unit=unit,
+                   x_name=sel.x, x_unit=axis_unit(ds, sel, sel.x),
+                   y_name=sel.y, y_unit=axis_unit(ds, sel, sel.y), z_name=name, z_unit=unit,
                    selection=sel, source=str(source) if source else None,
                    z=np.asarray(zc, dtype=complex).copy() if cplx else None,
-                   held=held_values(ds, sel), ref=ref)
+                   held=held_values(ds, sel), ref=ref,
+                   x_index=xi, y_index=yi, x_tags=xt, y_tags=yt)
 
 
 #: a reference along one axis is along the other once the map is turned
@@ -463,7 +646,8 @@ def transpose_map(m: MapData) -> MapData:
                    x_name=m.y_name, x_unit=m.y_unit, y_name=m.x_name, y_unit=m.x_unit,
                    z_name=m.z_name, z_unit=m.z_unit, selection=sel, source=m.source,
                    z=None if m.z is None else np.asarray(m.z).T.copy(),
-                   held=dict(m.held), ref=ref)
+                   held=dict(m.held), ref=ref,
+                   x_index=m.y_index, y_index=m.x_index, x_tags=m.y_tags, y_tags=m.x_tags)
 
 
 def pick_rows(y, count: int, lo: float | None = None, hi: float | None = None) -> np.ndarray:
@@ -489,7 +673,10 @@ def map_rows(m: MapData, rows) -> MapData:
                    x_name=m.x_name, x_unit=m.x_unit, y_name=m.y_name, y_unit=m.y_unit,
                    z_name=m.z_name, z_unit=m.z_unit, selection=m.selection, source=m.source,
                    z=None if m.z is None else np.asarray(m.z)[rows].copy(),
-                   held=dict(m.held), ref=None if m.ref is None else dict(m.ref))
+                   held=dict(m.held), ref=None if m.ref is None else dict(m.ref),
+                   x_index=m.x_index, x_tags=m.x_tags,
+                   y_index=None if m.y_index is None else np.asarray(m.y_index)[rows].copy(),
+                   y_tags=None if m.y_tags is None else [m.y_tags[int(r)] for r in rows])
 
 
 def map_to_curves(m: MapData, columns=None) -> list[Curve]:
@@ -517,11 +704,19 @@ def map_to_curves(m: MapData, columns=None) -> list[Curve]:
     for i in cols:
         xv = float(x[i])
         sel = Selection.from_dict(base)
-        sel.slices[m.x_name] = Slice("at", i)
+        # the index IN THE FILE: X may show one run of an up-and-down axis
+        fi = i if m.x_index is None else int(np.asarray(m.x_index)[i])
+        sel.slices[m.x_name] = Slice("at", fi)
         if m.ref:            # a cut of the referenced map (export.ref_line)
             sel.ref = {"x": m.x_name, "y": m.y_name, **m.ref}
+        else:
+            sel.runs.pop(m.x_name, None)     # X is held now, not shown
         sel.x, sel.y = m.y_name, None        # the curve runs along the map's Y
-        label = f"{m.x_name} = {xv:g} {m.x_unit}".strip()
+        if m.x_tags and m.x_unit == "point #":         # X drawn by point number
+            label = f"{m.x_name} = {m.x_tags[i]}"
+        else:
+            label = run_label(f"{m.x_name} = {xv:g} {m.x_unit}".strip(),
+                              m.x_tags[i] if m.x_tags else None)
         out.append(Curve(x=yax.copy(), y=vals[i].copy(), label=label,
                          x_name=m.y_name, x_unit=m.y_unit,
                          y_name=m.z_name, y_unit=m.z_unit, selection=sel, source=m.source,
@@ -596,8 +791,8 @@ def reference_text(ds: xr.Dataset, sel: Selection, style: MapStyle) -> str:
     op = "−" if style.ref_op == "subtract" else "÷"
     if style.ref in ("row", "column"):
         dim = sel.y if style.ref == "row" else sel.x
-        n = detector(ds, sel.detector).sizes[dim]
-        return f"{op} {dim} = {coord_text(ds, dim, _ref_index(style.ref_i, n))}"
+        idx = shown_indices(ds, sel, dim)
+        return f"{op} {dim} = {coord_text(ds, dim, int(idx[_ref_index(style.ref_i, idx.size)]))}"
     if style.ref in ("median_rows", "median_columns"):
         return f"{op} median over {sel.y if style.ref == 'median_rows' else sel.x}"
     if style.ref in ("dd_y", "dd_x"):
@@ -697,7 +892,26 @@ def _encoding(path: Path) -> str:
 
 
 def _num(v: float) -> str:
+    if isinstance(v, (int, np.integer)):
+        return str(int(v))                  # a run number, a direction: no ".0"
     return "" if not np.isfinite(v) else repr(float(v))
+
+
+def _run_columns(c: Curve) -> list[tuple[np.ndarray, str, str, str]]:
+    """(values, name, unit, note) of the two columns that say which run each
+    point of an up-and-down X is on -- the file's own <x>_segment and
+    <x>_direction, so a spreadsheet can split the loop again."""
+    if c.segment is None or not c.runs:
+        return []
+    segs = Segments(np.asarray(c.segment, dtype=int), list(c.runs))
+    return [(segs.seg.astype(int), f"{c.x_name}_segment", "", "run (0 = first)"),
+            (segs.directions(), f"{c.x_name}_direction", "", "+1 up, -1 down")]
+
+
+def _same_runs(a: Curve, b: Curve) -> bool:
+    if a.segment is None or b.segment is None:
+        return a.segment is None and b.segment is None
+    return np.array_equal(a.segment, b.segment)
 
 
 def share_one_x(shown: list[Curve]) -> bool:
@@ -711,6 +925,7 @@ def share_one_x(shown: list[Curve]) -> bool:
     first = shown[0]
     return all(c.x_name == first.x_name and c.x_unit == first.x_unit
                and c.x.shape == first.x.shape and np.array_equal(c.x, first.x)
+               and _same_runs(c, first)
                for c in shown)
 
 
@@ -724,6 +939,10 @@ def write_curves(path: str | Path, curves: list[Curve], norm: str = "none",
     Curves that share their X values exactly get ONE X column (the usual case:
     one field sweep, several frequencies). Otherwise each curve brings its own
     X column, and shorter columns end in empty cells rather than invented zeros.
+
+    An X that goes up AND down (a hysteresis loop) is followed by two more
+    columns, `<x>_segment` (the run, 0 = first) and `<x>_direction` (+1 up,
+    -1 down): the values alone repeat, the run number tells the branches apart.
     """
     path = Path(path)
     shown = [c for c in curves if c.visible]
@@ -735,9 +954,13 @@ def write_curves(path: str | Path, curves: list[Curve], norm: str = "none",
     if shared:
         cols.append(shown[0].x); names.append(shown[0].x_name)
         units.append(shown[0].x_unit); notes.append("")
+        for v, nm, un, no in _run_columns(shown[0]):
+            cols.append(v); names.append(nm); units.append(un); notes.append(no)
     for c, y in zip(shown, ys):
         if not shared:
             cols.append(c.x); names.append(c.x_name); units.append(c.x_unit); notes.append(c.label)
+            for v, nm, un, no in _run_columns(c):
+                cols.append(v); names.append(nm); units.append(un); notes.append(no)
         cols.append(y); names.append(c.y_name)
         units.append(c.y_unit if norm == "none" else "")
         notes.append(c.label + ("" if norm == "none" else f" [{NORMS[norm]}]"))
@@ -793,15 +1016,20 @@ def figure_curves(curves: list[Curve], norm: str = "none", offset: float = 0.0,
     fig = _figure(size)
     ax = fig.add_subplot()
     shown = [c for c in curves if c.visible]
+    n_lines = 0
     for c, y in zip(shown, displayed_y(curves, norm, offset)):
-        ax.plot(c.x, y, marker="o", ms=2.5, lw=1.2, label=c.label)
+        # one line per run of an up-and-down X, each its own colour
+        for run, idx in curve_runs(c):
+            ax.plot(np.asarray(c.x)[idx], np.asarray(y)[idx], marker="o", ms=2.5,
+                    lw=1.2, label=run_label(c.label, run))
+            n_lines += 1
     if shown:
         xt, yt = curve_axis_titles(shown, norm)       # a unit only if all share it
         ax.set_xlabel(xt)
         ax.set_ylabel(yt)
     if logy:
         ax.set_yscale("log")
-    if 1 < len(shown) <= 16:
+    if 1 < n_lines <= 16:
         ax.legend(fontsize=7, frameon=False)
     if title:
         ax.set_title(title, fontsize=9)
@@ -876,13 +1104,92 @@ def detector(ds, name):
     return ds[name]
 
 
-def reduce(da, x, y=None, slices=None, part="abs"):
+def runs_of(ds, dim):
+    """(run number per point, one dict per run) of an axis that goes up AND
+    down (a hysteresis loop), or None. From the file's <dim>_segment; an older
+    file of a typed loop is split where its values turn back."""
+    if dim not in ds.coords:
+        return None
+    if f"{dim}_segment" in ds.coords:
+        seg = np.asarray(ds[f"{dim}_segment"].values).astype(int)
+        try:
+            info = json.loads(ds[dim].attrs.get("segments_json") or "[]")
+        except ValueError:
+            info = []
+        if len(info) != (seg.max() + 1 if seg.size else 0):
+            d = np.asarray(ds[f"{dim}_direction"].values).astype(int)
+            info = [{"direction": int(d[seg == k][0]), "joined": int(k > 0)}
+                    for k in range(seg.max() + 1)]
+        return seg, info
+    try:
+        v = np.asarray(ds[dim].values, dtype=float)
+    except (TypeError, ValueError):
+        return None
+    if v.ndim != 1 or v.size < 3 or not np.all(np.isfinite(v)):
+        return None
+    seg, dirs, k, cur = np.zeros(v.size, dtype=int), [], 0, 0
+    for i in range(1, v.size):
+        step = int(np.sign(v[i] - v[i - 1]))
+        if step != 0 and cur != 0 and step != cur:
+            k += 1
+            dirs.append(cur)
+        if step != 0:
+            cur = step
+        seg[i] = k
+    if k == 0:
+        return None
+    dirs.append(cur or 1)
+    return seg, [{"direction": dirs[j], "joined": int(j > 0)} for j in range(k + 1)]
+
+
+def run_name(info, k):
+    way = "up" if info[k].get("direction", 1) > 0 else "down"
+    return way if len(info) <= 2 else f"seg {k + 1} {way}"
+
+
+def pick_runs(da, ds, x, y, runs):
+    """Which run of an up-and-down image axis to show: a map shows ONE run
+    (default the first), ascending; 'index' = every point against its number;
+    a line along x shows every run ('lines', drawn one line each).
+    Returns (da, {dim: file index of each point shown})."""
+    runs, shown = runs or {}, {}
+    for dim in [d for d in (x, y) if d]:
+        r = runs_of(ds, dim)
+        if r is None or dim not in da.dims or r[0].size != da.sizes[dim]:
+            continue
+        seg, info = r
+        line = y is None and dim == x
+        c = runs.get(dim)
+        ok = (c == "index" or (c == "lines" and line)
+              or (isinstance(c, int) and not isinstance(c, bool) and 0 <= c < len(info)))
+        c = c if ok else ("lines" if line else 0)
+        n = da.sizes[dim]
+        if c == "index":
+            da = da.assign_coords({dim: np.arange(n, dtype=float)})
+            shown[dim] = np.arange(n)
+        elif c == "lines":
+            shown[dim] = np.arange(n)
+        else:
+            idx = np.flatnonzero(seg == int(c))
+            v = np.asarray(da[dim].values, dtype=float)[idx]
+            if idx.size > 1 and v[-1] < v[0]:
+                idx = idx[::-1]
+            da = da.isel({dim: idx})
+            shown[dim] = idx
+    return da, shown
+
+
+def reduce(da, x, y=None, slices=None, part="abs", runs=None, ds=None, with_index=False):
     """Keep dims (y, x); hold ('at') or average ('mean', NaN-skipping) the rest.
 
     A complex detector is averaged as a complex number FIRST and turned into
-    |z| / arg z afterwards (coherent averaging), as in the viewer.
+    |z| / arg z afterwards (coherent averaging), as in the viewer. runs/ds:
+    the run shown of an axis that goes up and down (pick_runs).
     """
     slices = slices or {}
+    shown = {}
+    if ds is not None:
+        da, shown = pick_runs(da, ds, x, y, runs)
     others = [d for d in da.dims if d not in (x, y)]
     mean_dims = []
     for d in others:
@@ -901,7 +1208,13 @@ def reduce(da, x, y=None, slices=None, part="abs"):
             da = da.isel({d: 0})
     if np.iscomplexobj(da.values) and part != "complex":
         da = xr.DataArray(part_of(da.values, part), dims=da.dims, coords=da.coords)
-    return da.transpose(*[d for d in (y, x) if d])
+    da = da.transpose(*[d for d in (y, x) if d])
+    return (da, shown) if with_index else da
+
+
+def axis_of(da, dim):
+    """The coordinate of an image axis as shown (one run, or point numbers)."""
+    return np.asarray(da[dim].values, dtype=float) if dim in da.coords else np.arange(da.sizes[dim])
 
 
 def part_of(z, part):
@@ -950,13 +1263,20 @@ def ref_line(ds, c):
     r = c["ref"]
     held = r["y"] if c["x"] == r["x"] else r["x"]
     slices = {d: s for d, s in c["slices"].items() if d != held}
-    m = reduce(detector(ds, c["detector"]), r["x"], r["y"], slices, "complex")
-    xs = ds[r["x"]].values if r["x"] in ds.coords else np.arange(m.shape[1])
-    ys = ds[r["y"]].values if r["y"] in ds.coords else np.arange(m.shape[0])
+    # an up-and-down axis: the run chosen, else every point in measured order
+    runs = dict(c.get("runs", {}))
+    every = [d for d in (r["x"], r["y"]) if runs.get(d) in (None, "lines")]
+    runs.update({d: "index" for d in every})
+    m, shown = reduce(detector(ds, c["detector"]), r["x"], r["y"], slices, "complex",
+                      runs, ds, with_index=True)
+    xs, ys = [np.asarray(ds[d].values, dtype=float) if d in every and d in ds.coords
+              else axis_of(m, d) for d in (r["x"], r["y"])]
     z = reference(m.values, r["mode"], r.get("op", "divide"), r.get("i", -1), xs, ys)
     n = ds.sizes[held]
     k = min(max(int(c["slices"].get(held, {"i0": 0})["i0"]), 0), n - 1)
-    return part_of(z[k] if held == r["y"] else z[:, k], c["part"])
+    if held in shown:                        # the map shows one run of it
+        k = int(np.flatnonzero(shown[held] == k)[0])
+    return part_of(z[k] if held == r["y"] else z[:, k], c["part"]), (xs if held == r["y"] else ys)
 
 
 def normalize(v, mode):
@@ -1055,9 +1375,9 @@ def notebook_cells(nb_dir: Path, m: Map | None = None, style: MapStyle | None = 
             f"sel = {_py(sel)}\n"
             f"style = {_py(style.to_dict())}\n\n"
             f"ds = data[{key[m.source]!r}]\n"
-            "m = reduce(detector(ds, sel['detector']), sel['x'], sel['y'], sel['slices'], 'complex')\n"
-            "xs = ds[sel['x']].values if sel['x'] in ds.coords else np.arange(m.shape[1])\n"
-            "ys = ds[sel['y']].values if sel['y'] in ds.coords else np.arange(m.shape[0])\n"
+            "m = reduce(detector(ds, sel['detector']), sel['x'], sel['y'], sel['slices'], 'complex',\n"
+            "           sel.get('runs'), ds)\n"
+            "xs, ys = axis_of(m, sel['x']), axis_of(m, sel['y'])   # one run of an up-and-down axis\n"
             "z = reference(m.values, style['ref'], style['ref_op'], style['ref_i'], xs, ys)\n"
             "z = part_of(z, sel['part'])\n"
             "if style['norm'] in ('rows', 'columns'):\n"
@@ -1093,13 +1413,25 @@ def notebook_cells(nb_dir: Path, m: Map | None = None, style: MapStyle | None = 
             "for k, c in enumerate(CURVES):\n"
             "    ds = data[c['file']]\n"
             "    if c.get('ref'):                  # a cut of a referenced map\n"
-            "        y = ref_line(ds, c)\n"
+            "        y, x = ref_line(ds, c)\n"
             "    else:\n"
-            "        y = reduce(detector(ds, c['detector']), c['x'], None, c['slices'], c['part']).values\n"
-            "    x = ds[c['x']].values if c['x'] in ds.coords else np.arange(y.size)\n"
+            "        r = reduce(detector(ds, c['detector']), c['x'], None, c['slices'], c['part'],\n"
+            "                   c.get('runs'), ds)\n"
+            "        y, x = r.values, axis_of(r, c['x'])\n"
             "    yv = normalize(y, NORM) + k * OFFSET\n"
             "    lines.append((x, yv))\n"
-            "    ax.plot(x, yv, marker='o', ms=2.5, lw=1.2, label=c['label'])\n"
+            "    # an X that goes up AND down: one line per run, the loop closed as measured\n"
+            "    runs = runs_of(ds, c['x'])\n"
+            "    if runs is not None and runs[0].size == x.size and c.get('runs', {}).get(c['x'], 'lines') == 'lines':\n"
+            "        seg, info = runs\n"
+            "        for j in range(len(info)):\n"
+            "            idx = np.flatnonzero(seg == j)\n"
+            "            if j > 0 and info[j].get('joined') and idx[0] > 0:\n"
+            "                idx = np.r_[idx[0] - 1, idx]\n"
+            "            ax.plot(x[idx], yv[idx], marker='o', ms=2.5, lw=1.2,\n"
+            "                    label=c['label'] + ' · ' + run_name(info, j))\n"
+            "    else:\n"
+            "        ax.plot(x, yv, marker='o', ms=2.5, lw=1.2, label=c['label'])\n"
             f"ax.set_xlabel({curve_axis_titles(curves, norm)[0]!r})\n"
             f"ax.set_ylabel({curve_axis_titles(curves, norm)[1]!r})\n"
             "if LOGY:\n"

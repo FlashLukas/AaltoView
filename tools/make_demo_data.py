@@ -47,6 +47,15 @@ lines are ~10 MHz wide in frequency), with the VNA's delay, ripple and loss
 (vna_background), the exact oscillator lineshape, and a reference sweep at
 800 mT where nothing resonates below 18 GHz.
 
+Files 11-13 sweep the field UP AND DOWN (a hysteresis loop, AaltoFlow's
+`segments` axis; the file contract is AaltoFlow docs/DEVELOPER_NOTES.md 4l):
+11 a Kerr loop 0 -> 100 -> -100 -> 100 mT of a film with 30 mT coercivity,
+12 the same loop against a LOG-spaced frequency axis (lock-in FMR of that film:
+the resonance follows the field along the magnetisation, so it differs between
+the up and the down branch below the switching field), 13 an OLDER file of a
+typed loop -- the same values, no `field_segment` (the viewer splits it at its
+reversals). `segmented_axis()` writes the contract's coordinates.
+
 A second, ANISOTROPIC film for the angle-dependent files (5, 6): Meff = 1.4 T,
 in-plane uniaxial Bu = 12 mT along 90 deg, 4-fold B4 = 18 mT along 0 deg, 6-fold
 B6 = 3 mT along 15 deg, alpha = 0.004, dB0 = 1 mT -- field in the plane at angle
@@ -210,6 +219,59 @@ def recipe(name, comment, axes, detectors):
 
 def lin(param, a, b, n):
     return {"type": "linear", "param": param, "start": a, "stop": b, "num": n}
+
+
+def segment_values(segments):
+    """(values, run per point, info per run): AaltoFlow's recipe.segment_values
+    -- runs concatenated, a run that starts where the last one stopped drops
+    its first point (the joint is measured once)."""
+    vals, seg_of, info, prev = [], [], [], None
+    for k, sg in enumerate(segments):
+        a, b, n = float(sg["start"]), float(sg["stop"]), int(sg["num"])
+        run = np.geomspace(a, b, n) if sg.get("spacing") == "log" else np.linspace(a, b, n)
+        joined = prev is not None and a == prev
+        if joined:
+            run = run[1:]
+        d = {"start": a, "stop": b, "num": n}
+        if sg.get("spacing") == "log":
+            d["spacing"] = "log"
+        d.update(direction=1 if b > a else -1, joined=int(joined), first=len(vals),
+                 count=int(len(run)))
+        info.append(d)
+        vals += run.tolist()
+        seg_of += [k] * len(run)
+        prev = b
+    return np.asarray(vals), np.asarray(seg_of, dtype=np.int32), info
+
+
+def segmented_axis(name, segments, units):
+    """The coordinates of an up-and-down axis, as the engine writes them:
+    {name: values (+ segments_json ...), name_segment, name_direction}."""
+    v, seg, info = segment_values(segments)
+    return {
+        name: (name, v, {"units": units, "segments_json": json.dumps(info),
+                         "segment_source": "recipe", "n_segments": len(info)}),
+        f"{name}_segment": (name, seg, {"long_name": f"segment of {name} (0 = first)",
+                                        "units": "", "segment_of": name}),
+        f"{name}_direction": (name, np.asarray([info[k]["direction"] for k in seg],
+                                               dtype=np.int8),
+                              {"long_name": f"direction of {name} (+1 up, -1 down)",
+                               "units": "", "segment_of": name}),
+    }
+
+
+#: files 11-13: the loop, and the film's switching
+LOOP = [{"start": 0, "stop": 100, "num": 21}, {"start": 100, "stop": -100, "num": 41},
+        {"start": -100, "stop": 100, "num": 41}]
+HC, WIDTH = 30.0, 6.0       # mT: coercive field, switching width
+
+
+def loop_m(field, direction):
+    """Magnetisation along the field axis on each branch: switches at +-HC.
+    The virgin run (first, up from 0 of a demagnetised film) follows the
+    up branch -- close enough for a picture."""
+    field = np.asarray(field, dtype=float)
+    return np.tanh((field - np.where(np.asarray(direction) > 0, HC, -HC)) / WIDTH)
 
 
 def save(ds: xr.Dataset, path: Path, seconds: float):
@@ -453,6 +515,54 @@ def main(argv=None) -> int:
                                                           "values": [0.0]},
                    lin("pos_x", 0, 20, 201)], ["lockin"])}),
         out / "2026-09-20" / "101500_py_stripe_trmoke.nc", 3600.0)
+
+    # 11. a Kerr hysteresis loop: field 0 -> 100 -> -100 -> 100 mT (segments)
+    ax11 = segmented_axis("field", LOOP, "mT")
+    b11 = ax11["field"][1]
+    dir11 = ax11["field_direction"][1]
+    kerr = 12.0 * loop_m(b11, dir11) + 0.02 * b11 + RNG.normal(0, 0.25, b11.size)
+    refl = 1.20 + RNG.normal(0, 5e-4, b11.size)
+    save(xr.Dataset(
+        {"kerr": (("field",), kerr, {"units": "mdeg"}),
+         "reflectivity": (("field",), refl, {"units": "V"})},
+        coords=ax11,
+        attrs={"name": "kerr_loop", "_dims": ["field"],
+               "comment": "Co/Pt film, longitudinal MOKE; field up, down and up again",
+               "recipe_json": recipe("kerr_loop", "", [
+                   {"type": "linear", "param": "field", "segments": LOOP}],
+                   ["kerr", "reflectivity"])}),
+        out / "2026-10-14" / "091500_kerr_loop.nc", 240.0)
+
+    # 12. the loop against a log-spaced frequency: lock-in FMR on each branch
+    f12 = np.geomspace(1.0, 20.0, 61)                  # GHz, log-spaced
+    m12 = np.sign(loop_m(b11, dir11))                  # +1 / -1 along the axis
+    # the field along the magnetisation (+ an anisotropy field of 20 mT keeps
+    # the film's own field positive just before it switches)
+    beff = np.clip(b11 * m12 + 20.0, 1.0, None)
+    f0 = kittel(beff)
+    df = linewidth(beff)
+    z12 = 10.0 * chi(f12[None, :], f0[:, None], 1.0, df[:, None]) * np.exp(1j * PHASE0)
+    z12 = z12 + noise(z12.shape, 0.2)
+    save(xr.Dataset(
+        complex_vars("lockin", ("field", "rf_freq"), z12, "uV"),
+        coords={**ax11, "rf_freq": coord("rf_freq", f12, "GHz")},
+        attrs={"name": "fmr_loop_logfreq", "_dims": ["field", "rf_freq"],
+               "comment": "FMR through a hysteresis loop; frequency log-spaced 1-20 GHz",
+               "recipe_json": recipe("fmr_loop_logfreq", "", [
+                   {"type": "linear", "param": "field", "segments": LOOP},
+                   {"type": "linear", "param": "rf_freq", "start": 1.0, "stop": 20.0,
+                    "num": 61, "spacing": "log"}], ["lockin"])}),
+        out / "2026-10-14" / "103000_fmr_loop_logfreq.nc", 1800.0)
+
+    # 13. an OLDER file of a typed loop: the same values, no field_segment
+    save(xr.Dataset(
+        {"kerr": (("field",), kerr, {"units": "mdeg"})},
+        coords={"field": coord("field", b11, "mT")},
+        attrs={"name": "kerr_loop_typed", "_dims": ["field"],
+               "comment": "the loop typed as a list (written before segments existed)",
+               "recipe_json": recipe("kerr_loop_typed", "", [
+                   {"type": "array", "param": "field", "values": b11.tolist()}], ["kerr"])}),
+        out / "2026-10-14" / "110000_kerr_loop_typed.nc", 240.0)
     return 0
 
 

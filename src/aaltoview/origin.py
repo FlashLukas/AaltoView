@@ -8,7 +8,9 @@ which drives Origin over COM from OUTSIDE Origin. Install with the extra:
 
 What arrives in Origin:
     curves -> a workbook (X column(s) + one Y column per curve, long name /
-              units / comments filled in) and a line+symbol graph of all of them
+              units / comments filled in) and a line+symbol graph of all of them;
+              a curve whose X goes up AND down (a hysteresis loop) arrives as
+              one X/Y column pair PER RUN, so each branch is its own line
     map    -> a matrix with its X/Y extent set, plus a colour-map graph; if the
               axes are NOT evenly spaced (a matrix only knows start and end) it
               goes in as X/Y/Z columns instead, so no coordinate is invented
@@ -35,8 +37,8 @@ from pathlib import Path
 
 import numpy as np
 
-from .export import (Curve, Map, NORMS, Selection, axis_title, displayed_y,
-                     is_uniform, share_one_x)
+from .export import (Curve, Map, NORMS, Selection, axis_title, curve_runs, displayed_y,
+                     is_uniform, run_label, share_one_x)
 
 
 def available() -> str | None:
@@ -64,31 +66,46 @@ def _col(values) -> list:
     return [float(v) for v in np.asarray(values, dtype=float)]
 
 
-def push_curves(curves: list[Curve], norm: str = "none", offset: float = 0.0,
-                name: str = "AaltoView curves", graph: bool = True) -> str:
-    """Visible curves -> a new workbook (+ graph). Returns the book's name."""
+def curve_columns(curves: list[Curve], norm: str = "none", offset: float = 0.0):
+    """What push_curves writes, without Origin: (shared X or None, [(x, y,
+    label, curve)]). A curve whose X goes up AND down is ONE COLUMN PAIR PER
+    RUN (labelled "· up" / "· down"): Origin then draws each branch of the
+    loop as its own line, instead of one line folded back on itself."""
     shown = [c for c in curves if c.visible]
     if not shown:
         raise ValueError("no visible curves to send")
     ys = displayed_y(curves, norm, offset)
+    split = any(c.segment is not None and c.runs for c in shown)
+    shared = share_one_x(shown) and not split    # same rule as the .dat/.csv export
+    pieces = []
+    for c, y in zip(shown, ys):
+        for run, idx in curve_runs(c):
+            pieces.append((np.asarray(c.x)[idx], np.asarray(y)[idx],
+                           run_label(c.label, run), c))
+    return (shown[0].x if shared else None), pieces
+
+
+def push_curves(curves: list[Curve], norm: str = "none", offset: float = 0.0,
+                name: str = "AaltoView curves", graph: bool = True) -> str:
+    """Visible curves -> a new workbook (+ graph). Returns the book's name."""
+    shared_x, pieces = curve_columns(curves, norm, offset)
     op = _op()
     book = op.new_book("w", lname=name)
     wks = book[0]
-    shared = share_one_x(shown)          # same rule as the .dat/.csv export
     pairs = []                         # (y column, x column) for the graph
     col = 0
-    if shared:
-        wks.from_list(col, _col(shown[0].x), lname=shown[0].x_name,
-                      units=shown[0].x_unit, axis="X")
+    if shared_x is not None:
+        c0 = pieces[0][3]
+        wks.from_list(col, _col(shared_x), lname=c0.x_name, units=c0.x_unit, axis="X")
         xcol, col = 0, 1
-    for c, y in zip(shown, ys):
-        if not shared:
-            wks.from_list(col, _col(c.x), lname=c.x_name, units=c.x_unit,
-                          comments=c.label, axis="X")
+    for x, y, label, c in pieces:
+        if shared_x is None:
+            wks.from_list(col, _col(x), lname=c.x_name, units=c.x_unit,
+                          comments=label, axis="X")
             xcol, col = col, col + 1
         wks.from_list(col, _col(y), lname=c.y_name,
                       units=c.y_unit if norm == "none" else "",
-                      comments=c.label if norm == "none" else f"{c.label} [{NORMS[norm]}]",
+                      comments=label if norm == "none" else f"{label} [{NORMS[norm]}]",
                       axis="Y")
         pairs.append((col, xcol))
         col += 1
@@ -180,10 +197,12 @@ def save_payload(path: str | Path, *, curves: list[Curve] | None = None,
         meta["curves"] = []
         for i, c in enumerate(curves):
             arrays[f"cx{i}"], arrays[f"cy{i}"] = c.x, c.y
+            if c.segment is not None:
+                arrays[f"cs{i}"] = np.asarray(c.segment, dtype=int)
             meta["curves"].append({k: getattr(c, k) for k in
                                    ("label", "x_name", "x_unit", "y_name", "y_unit",
                                     "source", "visible")}
-                                  | {"selection": c.selection.to_dict()})
+                                  | {"selection": c.selection.to_dict(), "runs": c.runs})
     if table is not None:
         meta["table"] = [{"name": c["name"], "unit": c.get("unit", ""),
                           "comment": c.get("comment", ""), "kind": c.get("kind", "Y"),
@@ -209,6 +228,8 @@ def load_payload(path: str | Path) -> dict:
             out["curves"] = [
                 Curve(x=f[f"cx{i}"], y=f[f"cy{i}"],
                       selection=Selection.from_dict(c["selection"]),
+                      segment=f[f"cs{i}"] if f"cs{i}" in f.files else None,
+                      runs=c.get("runs"),
                       **{k: c[k] for k in ("label", "x_name", "x_unit", "y_name",
                                            "y_unit", "source", "visible")})
                 for i, c in enumerate(meta["curves"])]
