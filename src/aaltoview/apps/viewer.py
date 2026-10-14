@@ -52,6 +52,7 @@ import xarray as xr
 from PySide6 import QtCore, QtGui, QtWidgets
 
 from .. import export as E
+from .. import segments as SG
 from .. import view as V
 from ..data import find_measurements, load, summarize
 from .analysis import AnalysisMenu
@@ -64,6 +65,32 @@ PART_TEXT = {"|z|": "abs", "arg z": "arg", "Re z": "real", "Im z": "imag"}
 #: in a saved figure and in the notebook.
 TAB10 = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd",
          "#8c564b", "#e377c2", "#7f7f7f", "#bcbd22", "#17becf"]
+
+#: the widest an uneven map axis is redrawn on an even grid (see even_index)
+MAX_RESAMPLE = 4096
+
+
+def even_index(edges: np.ndarray) -> np.ndarray | None:
+    """For an UNEVEN map axis (log-spaced, a typed list): which cell each
+    column of a fine EVEN grid over the same span falls in; None when the
+    cells are already even.
+
+    An ImageItem can only stretch its pixels evenly over a rectangle, so a
+    log-spaced frequency axis drawn as it is would put 1.0-1.05 GHz as wide as
+    19-20 GHz. Redrawn on a grid fine enough that the narrowest cell gets
+    about four columns (at most MAX_RESAMPLE), every cell is drawn within a
+    quarter of its own width of where it really is -- the same picture as the
+    saved figure (pcolormesh). The live view in scan-core does the same."""
+    e = np.asarray(edges, dtype=float)
+    if e.size > 1 and e[-1] < e[0]:
+        e = -e                                   # a descending axis: same cells
+    w = np.diff(e)
+    if w.size < 2 or not np.all(np.isfinite(w)) or np.allclose(w, w.mean(), rtol=1e-6, atol=0):
+        return None
+    span = float(e[-1] - e[0])
+    m = int(min(MAX_RESAMPLE, max(w.size, np.ceil(4 * span / max(w.min(), 1e-300)))))
+    centres = e[0] + (np.arange(m) + 0.5) * span / m
+    return np.clip(np.searchsorted(e, centres, side="right") - 1, 0, w.size - 1)
 
 
 def _float(text: str, default: float) -> float:
@@ -371,6 +398,10 @@ class CubeControls(QtWidgets.QWidget):
         self.ds: xr.Dataset | None = None
         self.rows: list[DimRow] = []
         self._signature = None
+        # an image axis that goes up AND down: which run(s) to show
+        self._run_choice: dict = {}
+        self._run_combos: dict[str, QtWidgets.QComboBox] = {}
+        self._run_sig = None
 
         v = QtWidgets.QVBoxLayout(self)
         v.setContentsMargins(0, 0, 0, 0)
@@ -401,6 +432,9 @@ class CubeControls(QtWidgets.QWidget):
             top.addWidget(self.y_combo)
         top.addStretch(1)
         v.addLayout(top)
+        self.runs_box = QtWidgets.QHBoxLayout()
+        self.runs_box.setSpacing(6)
+        v.addLayout(self.runs_box)
         self.rows_box = QtWidgets.QVBoxLayout()
         self.rows_box.setSpacing(3)
         v.addLayout(self.rows_box)
@@ -432,7 +466,22 @@ class CubeControls(QtWidgets.QWidget):
         y = None if y in ("", NONE_TEXT) else y
         return E.Selection(detector=self.det_combo.currentText(), x=x, y=y,
                            slices={r.dim: r.slice_() for r in self.rows},
-                           part=PART_TEXT.get(self.part_combo.currentText(), "abs"))
+                           part=PART_TEXT.get(self.part_combo.currentText(), "abs"),
+                           runs=self.run_choices())
+
+    def run_choices(self) -> dict:
+        """{dim: choice} for every image axis that goes up and down -- always
+        explicit, so a cut or an export of a map keeps the run the map shows."""
+        return {d: c.currentData() for d, c in self._run_combos.items()}
+
+    def set_run_choice(self, dim: str, choice) -> None:
+        """Show `choice` (segments.LINES / INDEX / a run number) of `dim`."""
+        self._run_choice[dim] = choice
+        combo = self._run_combos.get(dim)
+        if combo is not None:
+            i = combo.findData(choice)
+            if i >= 0:
+                combo.setCurrentIndex(i)          # emits changed
 
     def dims(self) -> list[str]:
         da = self.current_da()
@@ -472,8 +521,15 @@ class CubeControls(QtWidgets.QWidget):
         plotted = {self.x_combo.currentText()}
         if self.with_y:
             plotted.add(self.y_combo.currentText())
+        self._rebuild_runs(da)
         want = [d for d in dims if d not in plotted]
-        if [r.dim for r in self.rows] == want and all(r.n == da.sizes[r.dim] for r in self.rows):
+        segs = {d: SG.segments_of(self.ds, d) for d in want}
+        same_runs = all((r.segs is None) == (segs[r.dim] is None)
+                        and (r.segs is None or r.segs.n == segs[r.dim].n
+                             and np.array_equal(r.segs.seg, segs[r.dim].seg))
+                        for r in self.rows if r.dim in segs)
+        if ([r.dim for r in self.rows] == want and same_runs
+                and all(r.n == da.sizes[r.dim] for r in self.rows)):
             # same rows, but possibly ANOTHER file of the same shape: refresh the
             # coordinate values the rows display, keep what the operator chose
             for r in self.rows:
@@ -486,12 +542,60 @@ class CubeControls(QtWidgets.QWidget):
             r.deleteLater()
         self.rows = []
         for d in want:
-            row = DimRow(d, *self._axis(d, da))
+            row = DimRow(d, *self._axis(d, da), segments=segs[d])
             if d in keep:
                 row.restore(keep[d])
             row.changed.connect(self.changed.emit)
             self.rows_box.addWidget(row)
             self.rows.append(row)
+
+    def _rebuild_runs(self, da: xr.DataArray) -> None:
+        """One chooser per image axis that goes up AND down, rebuilt only when
+        what it offers changes. A line plot can draw every run (one line
+        each); a map shows ONE run at a time -- it cannot put two values in
+        one cell -- or every point against its point number."""
+        y = self.y_combo.currentText() if self.with_y else ""
+        axes = [d for d in (self.x_combo.currentText(), y) if d and d != NONE_TEXT]
+        line = not self.with_y
+        want = []
+        for d in axes:
+            segs = SG.segments_of(self.ds, d)
+            if segs is not None and d in da.dims and segs.seg.size == da.sizes[d]:
+                want.append((d, tuple(SG.run_options(segs, line))))
+        if want == self._run_sig:
+            return
+        self._run_sig = want
+        while self.runs_box.count():
+            w = self.runs_box.takeAt(0).widget()
+            if w is not None:
+                w.setParent(None)
+                w.deleteLater()
+        self._run_combos = {}
+        for d, opts in want:
+            lbl = QtWidgets.QLabel(f"{d} runs")
+            lbl.setStyleSheet(f"color:{C['muted']};")
+            combo = QtWidgets.QComboBox()
+            combo.setToolTip(
+                f"{d} goes up AND down: the same value is measured on more than one\n"
+                f"run (a hysteresis loop). A line plot draws every run as its own\n"
+                f"line; a map shows ONE run at a time (two values cannot share a\n"
+                f"cell), or every point against its point number.")
+            for text, c in opts:
+                combo.addItem(text, c)
+            segs = SG.segments_of(self.ds, d)
+            choice = SG.valid_choice(segs, self._run_choice.get(d), line)
+            combo.setCurrentIndex(max(0, combo.findData(choice)))
+            combo.currentIndexChanged.connect(
+                lambda _i, d=d, cb=combo: self._run_picked(d, cb))
+            self.runs_box.addWidget(lbl)
+            self.runs_box.addWidget(combo)
+            self._run_combos[d] = combo
+        if want:
+            self.runs_box.addStretch(1)
+
+    def _run_picked(self, dim: str, combo: QtWidgets.QComboBox) -> None:
+        self._run_choice[dim] = combo.currentData()
+        self.changed.emit()
 
     def _axis(self, d: str, da: xr.DataArray) -> tuple[np.ndarray, str]:
         """A dim's coordinate values and unit (0..n-1 and no unit without one)."""
@@ -889,14 +993,16 @@ class MapPanel(_Panel):
         if ds is None or sel is None or sel.y is None or mode not in ("row", "column"):
             return
         dim = sel.y if mode == "row" else sel.x
-        n = V.detector(ds, sel.detector).sizes.get(dim, 0)
-        key = (id(ds), dim, n)
+        # the lines the MAP shows (one run of an up-and-down axis), in order
+        idx = E.shown_indices(ds, sel, dim)
+        n = idx.size
+        key = (id(ds), dim, n, tuple(idx[:2].tolist()))
         if key == self._ref_axis:
             return
         self._ref_axis = key
         self.ref_value.blockSignals(True)
         self.ref_value.clear()
-        self.ref_value.addItems([V.coord_text(ds, dim, i) for i in range(n)])
+        self.ref_value.addItems(V.coord_texts(ds, dim, idx.tolist()))
         self.ref_value.setCurrentIndex(n - 1)
         self.ref_value.blockSignals(False)
 
@@ -954,8 +1060,16 @@ class MapPanel(_Panel):
         self._map = m
         z = m.z
         style = self.map_style()
-        self.img.setImage(z, autoLevels=False)
+        # Each cell reaches HALFWAY to its neighbours (E.edges) -- as in the
+        # saved figure. An uneven axis is redrawn on a fine even grid (the
+        # ImageItem only stretches evenly), an even one is drawn as it is.
         xe, ye = E.edges(m.x), E.edges(m.y)
+        xi, yi = even_index(xe), even_index(ye)
+        if xi is not None:
+            z = z[:, xi]
+        if yi is not None:
+            z = z[yi, :]
+        self.img.setImage(np.ascontiguousarray(z), autoLevels=False)
         self.img.setRect(QtCore.QRectF(xe[0], ye[0], xe[-1] - xe[0], ye[-1] - ye[0]))
         self.img.setVisible(True)
         self._setting_levels = True
@@ -993,9 +1107,9 @@ class MapPanel(_Panel):
             bits.append(f"{red.coverage * 100:.0f} % measured (missing points are skipped)")
         if red.note:
             bits.append(red.note)
-        if not (E.is_uniform(m.x) and E.is_uniform(m.y)):
-            bits.append("uneven axis spacing: drawn evenly here; saved figures use the "
-                        "true positions")
+        runs = E.runs_text(ds, m.selection)
+        if runs:
+            bits.append(f"shown: {runs} (the axis goes up and down; one run at a time)")
         what = E.describe_slices(ds, m.selection)
         if what:
             bits.append(what)
@@ -1056,11 +1170,19 @@ class MapPanel(_Panel):
             ln.setVisible(True)
         self.readout.setText(self._point_text(i, j))
 
+    def _axis_text(self, dim: str, unit: str, values, index, k: int) -> str:
+        """'field = 50 mT · down' -- the file's value and run for an axis
+        that goes up and down (also when it is shown by point number)."""
+        if index is not None and self.host.ds is not None:
+            return f"{dim} = {V.coord_text(self.host.ds, dim, int(np.asarray(index)[k]))}"
+        return f"{dim} = {values[k]:g} {unit}".strip()
+
     def _point_text(self, i: int, j: int) -> str:
         m = self._map
         z = m.z[j, i]
         zt = "not measured" if not np.isfinite(z) else f"{z:.6g} {m.z_unit}".strip()
-        return (f"{m.x_name} = {m.x[i]:g} {m.x_unit}   {m.y_name} = {m.y[j]:g} {m.y_unit}"
+        return (f"{self._axis_text(m.x_name, m.x_unit, m.x, m.x_index, i)}   "
+                f"{self._axis_text(m.y_name, m.y_unit, m.y, m.y_index, j)}"
                 f"   →   {zt}")
 
     def _cut(self, which: str):
@@ -1069,6 +1191,12 @@ class MapPanel(_Panel):
             return
         sel = self._map.selection
         i, j = self._cursor
+        # the FILE index of the cursor's point: an up-and-down axis shows one
+        # run (or every point by number), not the file's order
+        if self._map.x_index is not None:
+            i = int(np.asarray(self._map.x_index)[i])
+        if self._map.y_index is not None:
+            j = int(np.asarray(self._map.y_index)[j])
         s = E.Selection.from_dict(sel.to_dict())
         st = self.map_style()
         if st.ref != "none":
@@ -1079,6 +1207,8 @@ class MapPanel(_Panel):
         else:
             s.x, s.y = sel.y, None
             s.slices[sel.x] = V.Slice("at", i)
+        if not s.ref:
+            s.runs.pop(sel.y if which == "row" else sel.x, None)   # held now
         try:
             curve = E.make_curve(self.host.ds, s, self.host.path)
         except Exception as exc:
@@ -1299,7 +1429,8 @@ class LinePanel(_Panel):
             self._ref_enable()
             return
         n = self.controls.current_da().sizes[d]
-        texts = [f"{d} = {V.coord_text(ds, d, i)}" for i in range(n)]
+        vals = V.coord_texts(ds, d, list(range(n)))      # "50 mT · down" on a loop
+        texts = [f"{d} = {t}" for t in vals]
         # rebuilt only when the text changes, so the operator's selection
         # survives a redraw of the same data
         if texts != [self.values.item(i).text() for i in range(self.values.count())]:
@@ -1309,7 +1440,7 @@ class LinePanel(_Panel):
             # (the highest field of a sweep, the usual reference)
             self.ref_value.blockSignals(True)
             self.ref_value.clear()
-            self.ref_value.addItems([V.coord_text(ds, d, i) for i in range(n)])
+            self.ref_value.addItems(vals)
             self.ref_value.setCurrentIndex(n - 1)
             self.ref_value.blockSignals(False)
         self.add_sel_btn.setEnabled(True)
@@ -1404,14 +1535,20 @@ class LinePanel(_Panel):
         self.legend.clear()
         norm, off = self.norm(), self.offset()
         shown = [c for c in self.curves if c.visible]
-        for k, (c, y) in enumerate(zip(shown, E.displayed_y(self.curves, norm, off))):
-            col = TAB10[k % len(TAB10)]
-            item = pg.PlotDataItem(c.x, y, pen=pg.mkPen(col, width=2), symbol="o",
-                                   symbolSize=4, symbolBrush=col, symbolPen=None,
-                                   name=c.label, connect="finite")
-            self.plot.addItem(item)
-            _fast(item, len(c.x))               # after addItem: clipToView needs the view
-            self._items.append(item)
+        k = 0
+        for c, y in zip(shown, E.displayed_y(self.curves, norm, off)):
+            # an X that goes up AND down: one line per run, each its own colour
+            # (a joined run starts at the previous run's end: the loop closes)
+            for run, idx in E.curve_runs(c):
+                col = TAB10[k % len(TAB10)]
+                k += 1
+                item = pg.PlotDataItem(np.asarray(c.x)[idx], np.asarray(y)[idx],
+                                       pen=pg.mkPen(col, width=2), symbol="o",
+                                       symbolSize=4, symbolBrush=col, symbolPen=None,
+                                       name=E.run_label(c.label, run), connect="finite")
+                self.plot.addItem(item)
+                _fast(item, len(idx))           # after addItem: clipToView needs the view
+                self._items.append(item)
 
         preview = None
         if self.show_preview.isChecked() and self.host.ds is not None:
@@ -1423,7 +1560,7 @@ class LinePanel(_Panel):
                     self.say(str(exc), error=True)
         if preview is not None:
             y = E.normalize(preview.y, norm) + len(shown) * off
-            self.preview.setData(preview.x, y, connect="finite")
+            self.preview.setData(preview.x, y, connect=self._preview_connect(preview, y))
             _fast(self.preview, len(preview.x))
             self.legend.addItem(self.preview, f"preview: {preview.label}")
         else:
@@ -1435,6 +1572,25 @@ class LinePanel(_Panel):
             self.plot.setLabel("left", yt)
         self.plot.setLogMode(y=self.logy.isChecked())
         self._fit_view(shown, preview is not None)
+
+    @staticmethod
+    def _preview_connect(c: E.Curve, y: np.ndarray):
+        """The grey preview is ONE path in measured order -- for a loop that
+        is the loop itself. Only where a run starts afresh (not joined: it
+        does not begin where the last one stopped) is the path broken, so no
+        line is drawn that was never measured; holes stay holes."""
+        if c.segment is None or not c.runs:
+            return "finite"
+        y = np.asarray(y, dtype=float)
+        ok = np.isfinite(y) & np.isfinite(np.asarray(c.x, dtype=float))
+        conn = ok[:-1] & ok[1:]
+        seg = np.asarray(c.segment, dtype=int)
+        for k, info in enumerate(c.runs):
+            if k and not info.get("joined"):
+                first = np.flatnonzero(seg == k)
+                if first.size and first[0] > 0:
+                    conn[first[0] - 1] = False
+        return np.concatenate([conn, [False]])
 
     def _fit_view(self, shown, has_preview: bool):
         """Fit the view to the VISIBLE curves when what is shown changes (a curve
@@ -1490,12 +1646,14 @@ class LinePanel(_Panel):
         """The visible curves -- or, with none frozen yet, the grey preview:
         sending one sweep should not need an "Add current" first."""
         shown = [c for c in self.curves if c.visible]
-        if shown:
-            return shown
-        sel = self.selection()
-        if self.host.ds is not None and sel is not None:
-            return [E.make_curve(self.host.ds, sel, self.host.path)]
-        raise ValueError("no curves to send -- open a measurement first")
+        if not shown:
+            sel = self.selection()
+            if self.host.ds is None or sel is None:
+                raise ValueError("no curves to send -- open a measurement first")
+            shown = [E.make_curve(self.host.ds, sel, self.host.path)]
+        # a loop goes to a module as one curve PER RUN, its label saying which:
+        # a fit of the up branch and of the down branch are two fits
+        return [p for c in shown for p in E.split_runs(c)]
 
     def figure(self):
         return E.figure_curves(self._need_curves(), self.norm(), self.offset(),

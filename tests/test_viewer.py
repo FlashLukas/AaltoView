@@ -427,3 +427,112 @@ def test_the_icon_is_handed_to_windows_again_after_the_window_shows():
         app.processEvents()
     assert w.windowIcon().cacheKey() != key and not w.windowIcon().isNull()
     w.close()
+
+
+# ───────────── axes that go up AND down (hysteresis loops, 2026-10-14) ─────────
+
+@pytest.fixture(scope="module")
+def loop_files(tmp_path_factory):
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
+    import make_demo_data as DEMO
+    out = tmp_path_factory.mktemp("loops")
+    DEMO.main([str(out)])
+    day = out / "2026-10-14"
+    return {"loop": day / "091500_kerr_loop.nc", "map": day / "103000_fmr_loop_logfreq.nc",
+            "old": day / "110000_kerr_loop_typed.nc"}
+
+
+def test_a_loop_on_1d_plots_is_one_line_per_run(viewer, loop_files):
+    viewer.load_file(loop_files["loop"])
+    lines = viewer.lines
+    combo = lines.controls._run_combos["field"]
+    assert combo.itemText(0) == "every run, one line each"
+    assert combo.count() == 3 + 2                         # every / 3 runs / by point #
+    lines.add_current()
+    assert [it.name() for it in lines._items] == ["kerr · seg 1 up", "kerr · seg 2 down",
+                                                  "kerr · seg 3 up"]
+    # the down run starts at the up run's last point: the loop is closed on screen
+    assert lines._items[1].xData[0] == 100.0
+    # a module gets the runs apart, labelled
+    assert [c.label for c in lines.analysis_curves()][1] == "kerr · seg 2 down"
+    # one run alone
+    lines.controls.set_run_choice("field", 1)
+    lines.clear()
+    lines.add_current()
+    assert len(lines._items) == 1 and lines.curves[0].label == "kerr (field seg 2 down)"
+
+
+def test_an_older_typed_loop_is_drawn_the_same_way(viewer, loop_files):
+    viewer.load_file(loop_files["old"])
+    viewer.lines.add_current()
+    assert len(viewer.lines._items) == 3
+
+
+def test_a_map_of_a_loop_shows_one_run_and_cuts_by_file_index(viewer, loop_files):
+    viewer.load_file(loop_files["map"])
+    m = viewer.map
+    c = m.controls
+    c.x_combo.setCurrentText("rf_freq")
+    c.y_combo.setCurrentText("field")
+    combo = c._run_combos["field"]
+    assert "every run" not in combo.itemText(0)            # a map cannot fold runs
+    assert m._map.z.shape == (21, 61)                     # the first run
+    c.set_run_choice("field", 1)
+    assert m._map.z.shape == (40, 61)
+    assert "shown: field seg 2 down" in m.status.text()
+    # log-spaced frequency: redrawn on a fine even grid, every cell its true width
+    assert m.img.image.shape[1] > 61
+    xe = E_edges(m._map.x)
+    assert m.img.mapRectToParent(m.img.boundingRect()).left() == pytest.approx(xe[0])
+    # the cursor names the run; a cut holds the FILE index of that point
+    m._place_cursor(10, 1)                                # row 1 = -95 mT, down
+    assert "field = -95 mT · seg 2 down" in m.readout.text()
+    m._cut("row")
+    sel = viewer.lines.curves[-1].selection
+    assert sel.slices["field"].i0 == 59
+    assert viewer.lines.curves[-1].label == "field = -95 mT · seg 2 down"
+    # by point number
+    c.set_run_choice("field", "index")
+    assert m._map.z.shape == (101, 61) and m._map.y_unit == "point #"
+
+
+def E_edges(x):
+    from aaltoview import export as E
+    return E.edges(x)
+
+
+def test_a_held_loop_names_its_run_and_offers_a_per_run_mean(viewer, loop_files):
+    viewer.load_file(loop_files["map"])
+    lines = viewer.lines
+    lines.controls.x_combo.setCurrentText("rf_freq")
+    row = lines.controls.rows[0]
+    assert row.dim == "field" and "mean of run" in row.modes()
+    row.slider.setValue(30)
+    assert row.value.text() == "50 mT · seg 2 down"
+    row.mode.setCurrentText("mean all")
+    assert "up and down mixed" in row.value.text()
+    row.mode.setCurrentText("mean of run")
+    row.run.setCurrentIndex(1)
+    assert lines.controls.selection().slices["field"].span(101) == (21, 60)
+    assert "mixed" not in row.value.text()
+    lines.add_current()
+    assert lines.curves[-1].label == "field mean of the seg 2 down run"
+    # "one per value of" lists every point with its run
+    lines.along_combo.setCurrentText("field")
+    assert lines.values.item(30).text() == "field = 50 mT · seg 2 down"
+
+
+def test_an_uneven_axis_that_is_not_a_loop_is_drawn_at_true_widths():
+    from aaltoview.apps.viewer import even_index
+    from aaltoview import export as E
+    assert even_index(E.edges(np.linspace(0, 1, 11))) is None
+    e = E.edges(np.geomspace(1, 20, 61))
+    idx = even_index(e)
+    centres = e[0] + (np.arange(idx.size) + 0.5) * (e[-1] - e[0]) / idx.size
+    # every column of the even grid lies in the cell it takes its value from
+    assert np.all((e[idx] <= centres) & (centres <= e[idx + 1]))
+    assert np.bincount(idx).min() >= 3                   # the narrowest cell ~4 columns
+    # a descending axis: the same cells, counted from the other end
+    assert np.array_equal(even_index(E.edges(np.geomspace(20, 1, 61))), 60 - idx[::-1])
